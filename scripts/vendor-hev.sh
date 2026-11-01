@@ -51,7 +51,6 @@ check_submodule "third-part/hev-task-system" "83196e8286c07e9eb174505eea4d076a65
 check_submodule "third-part/lwip" "e274b3bea0877611773b5869a63c737ef231e841"
 check_submodule "third-part/yaml" "7e2ecb0e67995d424b35e436f846078d37904b4e"
 
-mkdir -p "$STAGE_DIR"
 python3 - "$WORK_DIR/hev" "$STAGE_DIR" <<'PY'
 import shutil
 import sys
