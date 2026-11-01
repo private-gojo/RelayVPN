@@ -30,11 +30,11 @@ jobs:
           set -euo pipefail
           sudo modprobe tun || true
           test -c /dev/net/tun
-          sudo ip netns add relayvpn-capability-check
-          sudo ip netns del relayvpn-capability-check
+          sudo ip netns add rvchk
+          sudo ip netns del rvchk
           echo "TUN device and network namespaces are available."
-          sudo ip link add relayvpn-capability-check type dummy
-          sudo ip link del relayvpn-capability-check
+          sudo ip link add rvchk type dummy
+          sudo ip link del rvchk
           echo "CAP_NET_ADMIN operations are available."
 
       - name: Build standalone Hev executable
