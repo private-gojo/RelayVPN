@@ -1,0 +1,267 @@
+name: Phase 1b - Hev TCP runtime
+
+on:
+  push:
+    branches:
+      - phase1b/tcp-runtime
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  tcp-runtime:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout RelayVPN
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.ref_name }}
+
+      - name: Install runtime tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential cmake iproute2 iputils-ping curl openssh-client openssh-server python3
+
+      - name: Verify runner TUN and network namespace support
+        run: |
+          set -euo pipefail
+          sudo modprobe tun || true
+          test -c /dev/net/tun
+          sudo ip netns add rvchk
+          sudo ip netns del rvchk
+          echo "TUN device and network namespaces are available."
+          sudo ip link add rvchk type dummy
+          sudo ip link del rvchk
+          echo "CAP_NET_ADMIN operations are available."
+
+      - name: Build standalone Hev executable
+        run: |
+          set -euo pipefail
+          cmake -S . -B "$RUNNER_TEMP/relayvpn-phase1b-build" \
+            -G "Unix Makefiles" \
+            -DBUILD_HEV=ON \
+            -DBUILD_TUN2SOCKS=OFF \
+            -DBUILD_CLIENT=OFF \
+            -DBUILD_SERVER=OFF \
+            -DBUILD_FLOODER=OFF \
+            -DBUILD_EXAMPLES=OFF \
+            -DBUILD_TESTS=OFF \
+            -DBUILD_NCD=OFF \
+            -DBUILD_UDPGW=OFF \
+            -DBUILD_DOSTEST=OFF
+          cmake --build "$RUNNER_TEMP/relayvpn-phase1b-build" --target hev-bin --parallel 2 --verbose 2>&1 | tee "$RUNNER_TEMP/hev-build.log"
+          test -x third_party/hev-socks5-tunnel/bin/hev-socks5-tunnel
+          ldd third_party/hev-socks5-tunnel/bin/hev-socks5-tunnel | tee "$RUNNER_TEMP/hev-ldd.log"
+          if grep -E 'lib(yaml|lwip|hev-task-system)\\.so' "$RUNNER_TEMP/hev-ldd.log"; then
+            echo "Hev executable unexpectedly depends on vendored shared libraries." >&2
+            exit 1
+          fi
+
+      - name: Run TUN to Hev to SSH SOCKS5 to TCP integration test
+        shell: bash
+        run: |
+          set -euo pipefail
+          ROOT="$RUNNER_TEMP/phase1b"
+          HEV_BIN="$GITHUB_WORKSPACE/third_party/hev-socks5-tunnel/bin/hev-socks5-tunnel"
+          ARTIFACT_DIR="$RUNNER_TEMP/phase1b-artifacts"
+          mkdir -p "$ROOT/www" "$ROOT/logs" "$ARTIFACT_DIR"
+          printf 'RelayVPN Phase 1b TCP runtime OK\n' > "$ROOT/www/small.txt"
+          head -c 52428800 /dev/urandom > "$ROOT/www/large.bin"
+          sha256sum "$ROOT/www/large.bin" | awk '{print $1}' > "$ROOT/expected.sha256"
+
+          cleanup() {
+            set +e
+            if [[ -n "${HEV_PID:-}" ]] && kill -0 "$HEV_PID" 2>/dev/null; then
+              sudo kill -TERM "$HEV_PID" 2>/dev/null
+              wait "$HEV_PID" 2>/dev/null
+            fi
+            if [[ -n "${SSH_PID:-}" ]] && kill -0 "$SSH_PID" 2>/dev/null; then kill "$SSH_PID" 2>/dev/null; fi
+            if [[ -n "${HTTP_PID:-}" ]] && kill -0 "$HTTP_PID" 2>/dev/null; then kill "$HTTP_PID" 2>/dev/null; fi
+            if [[ -s "$ROOT/sshd.pid" ]]; then sudo kill "$(cat "$ROOT/sshd.pid")" 2>/dev/null; fi
+            sudo ip -n cli addr > "$ARTIFACT_DIR/cli-ip-addr.txt" 2>&1
+            sudo ip -n cli route > "$ARTIFACT_DIR/cli-ip-route.txt" 2>&1
+            cp -a "$ROOT/logs/." "$ARTIFACT_DIR/" 2>/dev/null
+            cp "$ROOT/hev.yml" "$ROOT/expected.sha256" "$ARTIFACT_DIR/" 2>/dev/null
+            sudo ip link del veth-root 2>/dev/null
+            sudo ip addr del 198.51.100.10/32 dev lo 2>/dev/null
+            sudo ip netns del cli 2>/dev/null
+          }
+          trap cleanup EXIT
+
+          sudo ip netns add cli
+          sudo ip link add veth-root type veth peer name veth-cli
+          sudo ip link set veth-cli netns cli
+          sudo ip addr add 10.200.0.1/30 dev veth-root
+          sudo ip link set veth-root up
+          sudo ip -n cli addr add 10.200.0.2/30 dev veth-cli
+          sudo ip -n cli link set lo up
+          sudo ip -n cli link set veth-cli up
+          sudo ip addr add 198.51.100.10/32 dev lo
+
+          sudo useradd --create-home --shell /bin/bash relayvpn-test
+          sudo usermod --password '*' relayvpn-test
+          sudo install -d -m 700 -o relayvpn-test -g relayvpn-test /home/relayvpn-test/.ssh
+          ssh-keygen -q -t ed25519 -N '' -f "$ROOT/id_ed25519"
+          sudo install -m 600 -o relayvpn-test -g relayvpn-test "$ROOT/id_ed25519.pub" /home/relayvpn-test/.ssh/authorized_keys
+          sudo ssh-keygen -A
+          cat > "$ROOT/sshd_config" <<EOF
+          Port 2222
+          ListenAddress 127.0.0.1
+          HostKey /etc/ssh/ssh_host_ed25519_key
+          PidFile $ROOT/sshd.pid
+          AuthorizedKeysFile .ssh/authorized_keys
+          PasswordAuthentication no
+          KbdInteractiveAuthentication no
+          PubkeyAuthentication yes
+          PermitRootLogin no
+          AllowUsers relayvpn-test
+          AllowTcpForwarding yes
+          PermitOpen any
+          UsePAM no
+          StrictModes yes
+          LogLevel VERBOSE
+          EOF
+          sudo mkdir -p /run/sshd
+          sudo /usr/sbin/sshd -f "$ROOT/sshd_config" -E "$ROOT/logs/sshd.log"
+          for i in $(seq 1 30); do
+            if ssh-keyscan -p 2222 127.0.0.1 > "$ROOT/known_hosts" 2>/dev/null && [[ -s "$ROOT/known_hosts" ]]; then break; fi
+            sleep 1
+          done
+          test -s "$ROOT/known_hosts"
+
+          ssh -N -D 10.200.0.1:1080 -p 2222 \
+            -i "$ROOT/id_ed25519" \
+            -o UserKnownHostsFile="$ROOT/known_hosts" \
+            -o StrictHostKeyChecking=yes \
+            -o ExitOnForwardFailure=yes \
+            -o ServerAliveInterval=15 \
+            -o ServerAliveCountMax=3 \
+            -v relayvpn-test@127.0.0.1 \
+            > "$ROOT/logs/ssh-client.log" 2>&1 &
+          SSH_PID=$!
+          for i in $(seq 1 30); do
+            if timeout 1 bash -c '</dev/tcp/10.200.0.1/1080' 2>/dev/null; then break; fi
+            sleep 1
+          done
+          kill -0 "$SSH_PID"
+          ss -lnt | grep '10.200.0.1:1080'
+
+          cat > "$ROOT/http_server.py" <<'PY'
+          from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
+          import os
+          os.chdir(os.environ["WEB_ROOT"])
+          ThreadingHTTPServer(("198.51.100.10", 8080), SimpleHTTPRequestHandler).serve_forever()
+          PY
+          WEB_ROOT="$ROOT/www" python3 "$ROOT/http_server.py" > "$ROOT/logs/http.log" 2>&1 &
+          HTTP_PID=$!
+          for i in $(seq 1 30); do
+            if curl --silent --fail http://198.51.100.10:8080/small.txt -o /dev/null --noproxy '*'; then break; fi
+            sleep 1
+          done
+          curl --silent --fail http://198.51.100.10:8080/small.txt --noproxy '*' | grep -Fx 'RelayVPN Phase 1b TCP runtime OK'
+
+          cat > "$ROOT/hev.yml" <<EOF
+          tunnel:
+            name: tun0
+            mtu: 1500
+            ipv4: 198.18.0.1
+            icmp: 'off'
+          socks5:
+            address: 10.200.0.1
+            port: 1080
+            udp: 'udp'
+          misc:
+            log-file: stderr
+            log-level: debug
+            connect-timeout: 10000
+            tcp-read-write-timeout: 120000
+          EOF
+
+          sudo bash -c 'exec ip netns exec cli "$1" "$2"' _ "$HEV_BIN" "$ROOT/hev.yml" > "$ROOT/logs/hev.log" 2>&1 &
+          HEV_PID=$!
+          for i in $(seq 1 30); do
+            if sudo ip -n cli link show tun0 >/dev/null 2>&1; then break; fi
+            if ! sudo kill -0 "$HEV_PID" 2>/dev/null; then cat "$ROOT/logs/hev.log"; exit 1; fi
+            sleep 1
+          done
+          sudo ip -n cli link show tun0
+          sudo ip -n cli addr show dev tun0
+          sudo ip -n cli link set tun0 up
+          sudo ip -n cli route add default dev tun0
+          echo '--- cli addresses ---'
+          sudo ip -n cli addr
+          echo '--- cli routes ---'
+          sudo ip -n cli route
+
+          echo '--- Test 1: HTTP 200 and expected body ---'
+          sudo ip netns exec cli curl --noproxy '*' --fail --silent --show-error \
+            --dump-header "$ROOT/logs/curl-headers.txt" \
+            http://198.51.100.10:8080/small.txt \
+            -o "$ROOT/small-result.txt"
+          grep -E '^HTTP/.* 200' "$ROOT/logs/curl-headers.txt"
+          cmp "$ROOT/www/small.txt" "$ROOT/small-result.txt"
+          echo 'PASS: HTTP 200 and body match'
+
+          echo '--- Test 2: 50 MiB transfer and SHA-256 ---'
+          sudo ip netns exec cli curl --noproxy '*' --fail --silent --show-error \
+            http://198.51.100.10:8080/large.bin -o "$ROOT/large-result.bin"
+          ACTUAL="$(sha256sum "$ROOT/large-result.bin" | awk '{print $1}')"
+          EXPECTED="$(cat "$ROOT/expected.sha256")"
+          echo "expected=$EXPECTED"
+          echo "actual=$ACTUAL"
+          test "$ACTUAL" = "$EXPECTED"
+          echo 'PASS: 50 MiB SHA-256 match'
+
+          echo '--- Test 3: 50 parallel TCP connections ---'
+          seq 1 50 | xargs -P 50 -I{} sh -c '
+            sudo ip netns exec cli curl --noproxy "*" --fail --silent --show-error               http://198.51.100.10:8080/small.txt -o "$1/parallel-{}.txt"
+            cmp "$1/www/small.txt" "$1/parallel-{}.txt"
+          ' _ "$ROOT"
+          echo 'PASS: 50/50 parallel connections'
+
+          echo '--- Test 4: SIGTERM shutdown ---'
+          sudo kill -TERM "$HEV_PID"
+          set +e
+          wait "$HEV_PID"
+          HEV_STATUS=$?
+          set -e
+          echo "hev_exit_status=$HEV_STATUS"
+          test "$HEV_STATUS" -eq 0
+          for i in $(seq 1 20); do
+            if ! sudo ip -n cli link show tun0 >/dev/null 2>&1; then break; fi
+            sleep 1
+          done
+          if sudo ip -n cli link show tun0 >/dev/null 2>&1; then
+            echo "tun0 still exists after Hev exit" >&2
+            exit 1
+          fi
+          if pgrep -x hev-socks5-tunnel >/dev/null; then
+            echo "Orphan Hev process remains" >&2
+            pgrep -a -x hev-socks5-tunnel
+            exit 1
+          fi
+          echo 'PASS: SIGTERM exit 0, tun0 removed, no orphan Hev process'
+
+          echo '--- SSH dynamic-forward evidence ---'
+          grep -E 'Authenticated to|Local forwarding listening|dynamic request|channel [0-9]+: new' "$ROOT/logs/ssh-client.log" | tail -n 30 || true
+          echo '--- Hev debug log (tail) ---'
+          tail -n 120 "$ROOT/logs/hev.log"
+
+          {
+            echo "## Phase 1b TCP runtime"
+            echo "- HTTP 200/body: PASS"
+            echo "- 50 MiB SHA-256: PASS"
+            echo "- 50 parallel connections: PASS"
+            echo "- SIGTERM cleanup: PASS"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload runtime logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: relayvpn-phase1b-tcp-runtime-logs
+          path: ${{ runner.temp }}/phase1b-artifacts
+          if-no-files-found: warn
