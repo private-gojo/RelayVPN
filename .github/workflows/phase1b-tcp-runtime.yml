@@ -66,7 +66,8 @@ jobs:
           set -euo pipefail
           ROOT="$RUNNER_TEMP/phase1b"
           HEV_BIN="$GITHUB_WORKSPACE/third_party/hev-socks5-tunnel/bin/hev-socks5-tunnel"
-          mkdir -p "$ROOT/www" "$ROOT/logs"
+          ARTIFACT_DIR="$RUNNER_TEMP/phase1b-artifacts"
+          mkdir -p "$ROOT/www" "$ROOT/logs" "$ARTIFACT_DIR"
           printf 'RelayVPN Phase 1b TCP runtime OK\n' > "$ROOT/www/small.txt"
           head -c 52428800 /dev/urandom > "$ROOT/www/large.bin"
           sha256sum "$ROOT/www/large.bin" | awk '{print $1}' > "$ROOT/expected.sha256"
@@ -79,6 +80,13 @@ jobs:
             fi
             if [[ -n "${SSH_PID:-}" ]]; then kill "$SSH_PID" 2>/dev/null; fi
             if [[ -n "${HTTP_PID:-}" ]]; then kill "$HTTP_PID" 2>/dev/null; fi
+            if [[ -s "$ROOT/sshd.pid" ]]; then sudo kill "$(cat "$ROOT/sshd.pid")" 2>/dev/null; fi
+            sudo ip -n cli addr > "$ARTIFACT_DIR/cli-ip-addr.txt" 2>&1
+            sudo ip -n cli route > "$ARTIFACT_DIR/cli-ip-route.txt" 2>&1
+            cp -a "$ROOT/logs/." "$ARTIFACT_DIR/" 2>/dev/null
+            cp "$ROOT/hev.yml" "$ROOT/expected.sha256" "$ARTIFACT_DIR/" 2>/dev/null
+            sudo ip link del veth-root 2>/dev/null
+            sudo ip addr del 198.51.100.10/32 dev lo 2>/dev/null
             sudo ip netns del cli 2>/dev/null
           }
           trap cleanup EXIT
@@ -93,11 +101,11 @@ jobs:
           sudo ip -n cli link set veth-cli up
           sudo ip addr add 198.51.100.10/32 dev lo
 
-          useradd --create-home --shell /bin/bash relayvpn-test
-          install -d -m 700 -o relayvpn-test -g relayvpn-test /home/relayvpn-test/.ssh
+          sudo useradd --create-home --shell /bin/bash relayvpn-test
+          sudo install -d -m 700 -o relayvpn-test -g relayvpn-test /home/relayvpn-test/.ssh
           ssh-keygen -q -t ed25519 -N '' -f "$ROOT/id_ed25519"
-          install -m 600 -o relayvpn-test -g relayvpn-test "$ROOT/id_ed25519.pub" /home/relayvpn-test/.ssh/authorized_keys
-          ssh-keygen -A
+          sudo install -m 600 -o relayvpn-test -g relayvpn-test "$ROOT/id_ed25519.pub" /home/relayvpn-test/.ssh/authorized_keys
+          sudo ssh-keygen -A
           cat > "$ROOT/sshd_config" <<EOF
           Port 2222
           ListenAddress 127.0.0.1
@@ -241,11 +249,6 @@ jobs:
           echo '--- Hev debug log (tail) ---'
           tail -n 120 "$ROOT/logs/hev.log"
 
-          mkdir -p "$RUNNER_TEMP/phase1b-artifacts"
-          cp -a "$ROOT/logs/." "$RUNNER_TEMP/phase1b-artifacts/"
-          cp "$ROOT/hev.yml" "$ROOT/expected.sha256" "$RUNNER_TEMP/phase1b-artifacts/"
-          sudo ip -n cli addr > "$RUNNER_TEMP/phase1b-artifacts/cli-ip-addr.txt" 2>&1 || true
-          sudo ip -n cli route > "$RUNNER_TEMP/phase1b-artifacts/cli-ip-route.txt" 2>&1 || true
           {
             echo "## Phase 1b TCP runtime"
             echo "- HTTP 200/body: PASS"
