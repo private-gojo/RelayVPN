@@ -75,7 +75,7 @@ jobs:
             set +e
             if [[ -n "${HEV_PID:-}" ]] && kill -0 "$HEV_PID" 2>/dev/null; then
               sudo kill -TERM "$HEV_PID" 2>/dev/null
-              sudo wait "$HEV_PID" 2>/dev/null
+              wait "$HEV_PID" 2>/dev/null
             fi
             if [[ -n "${SSH_PID:-}" ]]; then kill "$SSH_PID" 2>/dev/null; fi
             if [[ -n "${HTTP_PID:-}" ]]; then kill "$HTTP_PID" 2>/dev/null; fi
@@ -115,6 +115,7 @@ jobs:
           StrictModes yes
           LogLevel VERBOSE
           EOF
+          sudo mkdir -p /run/sshd
           sudo /usr/sbin/sshd -f "$ROOT/sshd_config" -E "$ROOT/logs/sshd.log"
           for i in $(seq 1 30); do
             if ssh-keyscan -p 2222 127.0.0.1 > "$ROOT/known_hosts" 2>/dev/null && [[ -s "$ROOT/known_hosts" ]]; then break; fi
@@ -170,8 +171,8 @@ jobs:
             tcp-read-write-timeout: 120000
           EOF
 
-          sudo bash -c 'ip netns exec cli "$1" "$2" > "$3" 2>&1 & echo $! > "$4"' _ "$HEV_BIN" "$ROOT/hev.yml" "$ROOT/logs/hev.log" "$ROOT/hev.pid"
-          HEV_PID="$(cat "$ROOT/hev.pid")"
+          sudo bash -c 'exec ip netns exec cli "$1" "$2"' _ "$HEV_BIN" "$ROOT/hev.yml" > "$ROOT/logs/hev.log" 2>&1 &
+          HEV_PID=$!
           for i in $(seq 1 30); do
             if sudo ip -n cli link show tun0 >/dev/null 2>&1; then break; fi
             if ! sudo kill -0 "$HEV_PID" 2>/dev/null; then cat "$ROOT/logs/hev.log"; exit 1; fi
@@ -215,7 +216,7 @@ jobs:
           echo '--- Test 4: SIGTERM shutdown ---'
           sudo kill -TERM "$HEV_PID"
           set +e
-          sudo wait "$HEV_PID"
+          wait "$HEV_PID"
           HEV_STATUS=$?
           set -e
           echo "hev_exit_status=$HEV_STATUS"
