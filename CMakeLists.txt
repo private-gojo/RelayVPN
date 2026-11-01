@@ -405,6 +405,12 @@ if (BUILD_HEV)
         COMMAND "${HEV_MAKE_EXECUTABLE}" -C "${HEV_SOURCE_DIR}" shared
         COMMENT "Building vendored Hev SOCKS5 Tunnel shared library"
     )
+
+    add_custom_target(hev-bin
+        COMMAND "${HEV_MAKE_EXECUTABLE}" -C "${HEV_SOURCE_DIR}" exec
+        BYPRODUCTS "${HEV_SOURCE_DIR}/bin/hev-socks5-tunnel"
+        COMMENT "Building standalone Hev SOCKS5 Tunnel executable"
+    )
 endif ()
 
 message(STATUS "Building components:")
