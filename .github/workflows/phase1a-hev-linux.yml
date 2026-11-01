@@ -1,0 +1,129 @@
+name: Phase 1a - Hev Linux build
+
+on:
+  push:
+    branches:
+      - phase1a/vendor-hev
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build-linux:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check target branch
+        run: |
+          if [[ "$GITHUB_REF_NAME" != "phase1a/vendor-hev" ]]; then
+            echo "This phase workflow is restricted to phase1a/vendor-hev."
+            exit 1
+          fi
+
+      - name: Checkout RelayVPN
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ github.ref_name }}
+
+      - name: Install native build tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential cmake
+
+      - name: Vendor pinned Hev source and dependencies
+        run: bash scripts/vendor-hev.sh
+
+      - name: Configure Hev and the unchanged BadVPN tun2socks target
+        run: |
+          cmake -S . -B "$RUNNER_TEMP/relayvpn-phase1a-build" \
+            -G "Unix Makefiles" \
+            -DBUILD_HEV=ON \
+            -DBUILD_TUN2SOCKS=ON \
+            -DBUILD_CLIENT=OFF \
+            -DBUILD_SERVER=OFF \
+            -DBUILD_FLOODER=OFF \
+            -DBUILD_EXAMPLES=OFF \
+            -DBUILD_TESTS=OFF \
+            -DBUILD_NCD=OFF \
+            -DBUILD_UDPGW=OFF \
+            -DBUILD_DOSTEST=OFF
+
+      - name: Build Hev and BadVPN tun2socks
+        run: |
+          set -o pipefail
+          cmake --build "$RUNNER_TEMP/relayvpn-phase1a-build" \
+            --target hev badvpn-tun2socks \
+            --parallel 2 --verbose 2>&1 | tee "$RUNNER_TEMP/phase1a-build.log"
+
+      - name: Verify shared-library outputs and legacy target
+        run: |
+          set -euo pipefail
+          HEV_DIR="third_party/hev-socks5-tunnel"
+          HEV_SO="$HEV_DIR/bin/libhev-socks5-tunnel.so"
+          YAML_SO="$HEV_DIR/third-part/yaml/bin/libyaml.so"
+          LWIP_SO="$HEV_DIR/third-part/lwip/bin/liblwip.so"
+          TASK_SO="$HEV_DIR/third-part/hev-task-system/bin/libhev-task-system.so"
+
+          test -s "$HEV_SO"
+          test -s "$YAML_SO"
+          test -s "$LWIP_SO"
+          test -s "$TASK_SO"
+
+          TUN2SOCKS_BIN="$(find "$RUNNER_TEMP/relayvpn-phase1a-build" -type f -name badvpn-tun2socks -print -quit)"
+          test -n "$TUN2SOCKS_BIN"
+          test -x "$TUN2SOCKS_BIN"
+
+          export LD_LIBRARY_PATH="$HEV_DIR/third-part/yaml/bin:$HEV_DIR/third-part/lwip/bin:$HEV_DIR/third-part/hev-task-system/bin"
+          ldd "$HEV_SO" | tee "$RUNNER_TEMP/hev-ldd.txt"
+          if grep -q "not found" "$RUNNER_TEMP/hev-ldd.txt"; then
+            echo "Unresolved Hev shared-library dependency" >&2
+            exit 1
+          fi
+
+          nm -D --defined-only "$HEV_SO" | grep "hev_socks5_tunnel_main"
+          file "$HEV_SO" "$TUN2SOCKS_BIN" | tee "$RUNNER_TEMP/phase1a-files.txt"
+
+      - name: Persist the plain-source vendor copy
+        run: |
+          git add third_party/hev-socks5-tunnel
+          if ! git diff --cached --quiet; then
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git commit -m "Vendor Hev SOCKS5 Tunnel and pinned dependencies"
+            git push origin "HEAD:$GITHUB_REF_NAME"
+          else
+            echo "Vendor source already committed."
+          fi
+
+      - name: Prepare CI build artifact
+        run: |
+          set -euo pipefail
+          ARTIFACT_DIR="$RUNNER_TEMP/phase1a-artifacts"
+          HEV_DIR="third_party/hev-socks5-tunnel"
+          TUN2SOCKS_BIN="$(find "$RUNNER_TEMP/relayvpn-phase1a-build" -type f -name badvpn-tun2socks -print -quit)"
+
+          mkdir -p "$ARTIFACT_DIR/libs"
+          cp "$HEV_DIR/bin/libhev-socks5-tunnel.so" "$ARTIFACT_DIR/libs/"
+          cp "$HEV_DIR/third-part/yaml/bin/libyaml.so" "$ARTIFACT_DIR/libs/"
+          cp "$HEV_DIR/third-part/lwip/bin/liblwip.so" "$ARTIFACT_DIR/libs/"
+          cp "$HEV_DIR/third-part/hev-task-system/bin/libhev-task-system.so" "$ARTIFACT_DIR/libs/"
+          cp "$TUN2SOCKS_BIN" "$ARTIFACT_DIR/badvpn-tun2socks"
+          cp "$RUNNER_TEMP/phase1a-build.log" "$ARTIFACT_DIR/"
+          cp "$RUNNER_TEMP/hev-ldd.txt" "$ARTIFACT_DIR/"
+          cp "$RUNNER_TEMP/phase1a-files.txt" "$ARTIFACT_DIR/"
+
+          {
+            echo "## Phase 1a Linux build"
+            echo
+            echo "- Hev: `1711a443d72d89679c0a2044f36085358a101bc4`"
+            echo "- Existing BadVPN target: `badvpn-tun2socks`"
+            echo "- Both targets built in the same CMake build."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload Linux libraries, legacy binary, and build log
+        uses: actions/upload-artifact@v7
+        with:
+          name: relayvpn-phase1a-linux
+          path: ${{ runner.temp }}/phase1a-artifacts
+          if-no-files-found: error
