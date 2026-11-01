@@ -197,7 +197,7 @@ jobs:
           sudo ip -n cli route
 
           echo '--- Test 1: HTTP 200 and expected body ---'
-          ip netns exec cli curl --noproxy '*' --fail --silent --show-error \
+          sudo ip netns exec cli curl --noproxy '*' --fail --silent --show-error \
             --dump-header "$ROOT/logs/curl-headers.txt" \
             http://198.51.100.10:8080/small.txt \
             -o "$ROOT/small-result.txt"
@@ -206,7 +206,7 @@ jobs:
           echo 'PASS: HTTP 200 and body match'
 
           echo '--- Test 2: 50 MiB transfer and SHA-256 ---'
-          ip netns exec cli curl --noproxy '*' --fail --silent --show-error \
+          sudo ip netns exec cli curl --noproxy '*' --fail --silent --show-error \
             http://198.51.100.10:8080/large.bin -o "$ROOT/large-result.bin"
           ACTUAL="$(sha256sum "$ROOT/large-result.bin" | awk '{print $1}')"
           EXPECTED="$(cat "$ROOT/expected.sha256")"
@@ -217,7 +217,7 @@ jobs:
 
           echo '--- Test 3: 50 parallel TCP connections ---'
           seq 1 50 | xargs -P 50 -I{} sh -c '
-            ip netns exec cli curl --noproxy "*" --fail --silent --show-error               http://198.51.100.10:8080/small.txt -o "$1/parallel-{}.txt"
+            sudo ip netns exec cli curl --noproxy "*" --fail --silent --show-error               http://198.51.100.10:8080/small.txt -o "$1/parallel-{}.txt"
             cmp "$1/www/small.txt" "$1/parallel-{}.txt"
           ' _ "$ROOT"
           echo 'PASS: 50/50 parallel connections'
