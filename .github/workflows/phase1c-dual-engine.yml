@@ -1,0 +1,63 @@
+name: Phase 1c - Dual engine integration
+
+on:
+  push:
+    branches:
+      - phase1c/dual-engine
+  pull_request:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  dual-engine:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout RelayVPN
+        uses: actions/checkout@v4
+
+      - name: Install build tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential cmake
+
+      - name: Build both engines
+        shell: bash
+        run: |
+          set -euo pipefail
+          BUILD_DIR="$RUNNER_TEMP/relayvpn-phase1c-build"
+          cmake -S . -B "$BUILD_DIR" \
+            -G "Unix Makefiles" \
+            -DBUILD_NOTHING_BY_DEFAULT=ON \
+            -DBUILD_TUN2SOCKS=ON \
+            -DBUILD_UDPGW=ON \
+            -DBUILD_HEV=ON
+          cmake --build "$BUILD_DIR" --parallel 2
+
+          test -x "$BUILD_DIR/tun2socks/badvpn-tun2socks"
+          test -x "$BUILD_DIR/udpgw/badvpn-udpgw"
+          test -x third_party/hev-socks5-tunnel/bin/hev-socks5-tunnel
+
+      - name: Install both engines and dispatcher
+        shell: bash
+        run: |
+          set -euo pipefail
+          PREFIX="$RUNNER_TEMP/relayvpn-phase1c-install"
+          cmake --install "$RUNNER_TEMP/relayvpn-phase1c-build" --prefix "$PREFIX"
+
+          test -x "$PREFIX/bin/relayvpn"
+          test -x "$PREFIX/bin/badvpn-tun2socks"
+          test -x "$PREFIX/bin/badvpn-udpgw"
+          test -x "$PREFIX/bin/hev-socks5-tunnel"
+
+      - name: Verify engine dispatch behavior
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash tests/relayvpn-engine-dispatch.sh \
+            "$RUNNER_TEMP/relayvpn-phase1c-install/bin/relayvpn"

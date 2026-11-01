@@ -1,0 +1,100 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+usage() {
+    cat <<'EOF'
+Usage:
+  relayvpn badvpn [badvpn-tun2socks arguments...]
+  relayvpn hev <config.yml>
+
+Selects one independent tun2socks engine. Each engine keeps its native
+configuration and runtime behavior.
+EOF
+}
+
+fail() {
+    printf 'relayvpn: %s\n' "$*" >&2
+    exit 2
+}
+
+if [[ $# -lt 1 ]]; then
+    usage >&2
+    exit 2
+fi
+
+engine="$1"
+shift
+
+script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+repo_root="$(cd -- "$script_dir/.." && pwd)"
+
+resolve_binary() {
+    local override="$1"
+    local sibling="$2"
+    local source_tree="$3"
+    local build_tree="$4"
+    local command_name="$5"
+
+    if [[ -n "$override" ]]; then
+        if [[ -x "$override" && ! -d "$override" ]]; then
+            printf '%s\n' "$override"
+            return 0
+        fi
+        if command -v "$override" >/dev/null 2>&1; then
+            command -v "$override"
+            return 0
+        fi
+        fail "configured binary is not executable or not found: $override"
+    fi
+
+    if [[ -x "$script_dir/$sibling" ]]; then
+        printf '%s\n' "$script_dir/$sibling"
+        return 0
+    fi
+
+    if [[ -n "$source_tree" && -x "$source_tree" ]]; then
+        printf '%s\n' "$source_tree"
+        return 0
+    fi
+
+    if [[ -n "$build_tree" && -x "$build_tree" ]]; then
+        printf '%s\n' "$build_tree"
+        return 0
+    fi
+
+    if command -v "$command_name" >/dev/null 2>&1; then
+        command -v "$command_name"
+        return 0
+    fi
+
+    return 1
+}
+
+case "$engine" in
+    badvpn)
+        binary="$(resolve_binary "${RELAYVPN_BADVPN_BIN:-}" \
+            "badvpn-tun2socks" "" \
+            "$repo_root/build/tun2socks/badvpn-tun2socks" \
+            "badvpn-tun2socks") || fail "badvpn-tun2socks not found; build/install BadVPN or set RELAYVPN_BADVPN_BIN"
+        exec "$binary" "$@"
+        ;;
+    hev)
+        if [[ $# -ne 1 ]]; then
+            usage >&2
+            fail "Hev requires exactly one YAML configuration path"
+        fi
+        binary="$(resolve_binary "${RELAYVPN_HEV_BIN:-}" \
+            "hev-socks5-tunnel" \
+            "$repo_root/third_party/hev-socks5-tunnel/bin/hev-socks5-tunnel" \
+            "" \
+            "hev-socks5-tunnel") || fail "hev-socks5-tunnel not found; build/install Hev or set RELAYVPN_HEV_BIN"
+        exec "$binary" "$1"
+        ;;
+    -h|--help|help)
+        usage
+        ;;
+    *)
+        usage >&2
+        fail "unknown engine: $engine"
+        ;;
+esac

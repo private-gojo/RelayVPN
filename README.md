@@ -63,6 +63,28 @@ and NSS libraries and make sure that CMake can find them.
 Windows builds are not provided. You can build from source code using Visual Studio by
 following the instructions in the file `BUILD-WINDOWS-VisualStudio.md`.
 
+
+## Tun2socks engines
+
+RelayVPN provides two independent tun2socks engines. Build both on Linux with:
+
+```bash
+cmake -S . -B build -DBUILD_NOTHING_BY_DEFAULT=ON -DBUILD_TUN2SOCKS=ON -DBUILD_UDPGW=ON -DBUILD_HEV=ON
+cmake --build build --parallel
+cmake --install build
+```
+
+Use the dispatcher to select an engine while keeping each engine's native arguments and configuration:
+
+```bash
+relayvpn badvpn --tundev tun0 --netif-ipaddr 198.18.0.1 --netif-netmask 255.255.255.0 --socks-server-addr 127.0.0.1:1080
+relayvpn hev /path/to/hev.yml
+```
+
+BadVPN retains its existing CLI options and UDPGW/SOCKS UDP modes. Hev uses its own YAML configuration and native SOCKS5 TCP/UDP support. The engines are alternatives for a TUN interface: run only one engine against a given TUN interface at a time.
+
+The dispatcher searches beside itself first, then the repository build output and `PATH`. Override binary locations with `RELAYVPN_BADVPN_BIN` or `RELAYVPN_HEV_BIN`. The current RelayVPN CMake integration builds Hev on native Linux; upstream Hev supports additional platforms independently.
+
 ## License
 
 The BSD 3-clause license as shown below applies to most of the code.
