@@ -75,7 +75,7 @@ case "$engine" in
         binary="$(resolve_binary "${RELAYVPN_BADVPN_BIN:-}" \
             "badvpn-tun2socks" "" \
             "$repo_root/build/tun2socks/badvpn-tun2socks" \
-            "badvpn-tun2socks") || fail "badvpn-tun2socks not found; build/install BadVPN or set RELAYVPN_BADVPN_BIN"
+            "badvpn-tun2socks")" || fail "badvpn-tun2socks not found; build/install BadVPN or set RELAYVPN_BADVPN_BIN"
         exec "$binary" "$@"
         ;;
     hev)
@@ -87,7 +87,7 @@ case "$engine" in
             "hev-socks5-tunnel" \
             "$repo_root/third_party/hev-socks5-tunnel/bin/hev-socks5-tunnel" \
             "" \
-            "hev-socks5-tunnel") || fail "hev-socks5-tunnel not found; build/install Hev or set RELAYVPN_HEV_BIN"
+            "hev-socks5-tunnel")" || fail "hev-socks5-tunnel not found; build/install Hev or set RELAYVPN_HEV_BIN"
         exec "$binary" "$1"
         ;;
     -h|--help|help)
