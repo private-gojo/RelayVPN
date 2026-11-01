@@ -55,6 +55,7 @@ build_switch(CLIENT "build badvpn-client" ${ON_IF_NOT_EMSCRIPTEN})
 build_switch(FLOODER "build badvpn-flooder" ${ON_IF_NOT_EMSCRIPTEN})
 build_switch(TUN2SOCKS "build badvpn-tun2socks" ${ON_IF_NOT_EMSCRIPTEN})
 build_switch(UDPGW "build badvpn-udpgw" ${ON_IF_NOT_EMSCRIPTEN})
+build_switch(HEV "build vendored Hev SOCKS5 Tunnel shared library" OFF)
 build_switch(NCD "build badvpn-ncd" ${ON_IF_LINUX_OR_EMSCRIPTEN})
 build_switch(DOSTEST "build dostest-server and dostest-attacker" OFF)
 
@@ -382,6 +383,28 @@ endif ()
 # dostest
 if (BUILD_DOSTEST)
     add_subdirectory(dostest)
+endif ()
+
+# Hev SOCKS5 Tunnel is an opt-in, independent Linux build target.
+if (BUILD_HEV)
+    if (NOT CMAKE_SYSTEM_NAME STREQUAL "Linux")
+        message(FATAL_ERROR "The vendored Hev target currently supports native Linux builds only")
+    endif ()
+
+    find_program(HEV_MAKE_EXECUTABLE NAMES make gmake)
+    if (NOT HEV_MAKE_EXECUTABLE)
+        message(FATAL_ERROR "GNU make is required to build the vendored Hev target")
+    endif ()
+
+    set(HEV_SOURCE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/third_party/hev-socks5-tunnel")
+    if (NOT EXISTS "${HEV_SOURCE_DIR}/Makefile")
+        message(FATAL_ERROR "Vendored Hev source not found at ${HEV_SOURCE_DIR}; run scripts/vendor-hev.sh")
+    endif ()
+
+    add_custom_target(hev
+        COMMAND "${HEV_MAKE_EXECUTABLE}" -C "${HEV_SOURCE_DIR}" shared
+        COMMENT "Building vendored Hev SOCKS5 Tunnel shared library"
+    )
 endif ()
 
 message(STATUS "Building components:")
