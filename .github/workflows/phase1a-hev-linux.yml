@@ -116,8 +116,8 @@ jobs:
           {
             echo "## Phase 1a Linux build"
             echo
-            echo "- Hev: `1711a443d72d89679c0a2044f36085358a101bc4`"
-            echo "- Existing BadVPN target: `badvpn-tun2socks`"
+            echo '- Hev: `1711a443d72d89679c0a2044f36085358a101bc4`'
+            echo '- Existing BadVPN target: `badvpn-tun2socks`'
             echo "- Both targets built in the same CMake build."
           } >> "$GITHUB_STEP_SUMMARY"
 
