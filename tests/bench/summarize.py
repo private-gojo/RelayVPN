@@ -65,6 +65,7 @@ def validate_artifacts(artifact_dir, arms):
                 if rounds != expected_rounds:
                     errors.append("%s RTT=%d C=%d: rounds must be exactly 1..8" % key)
 
+    ttfb_rows = read_csv(artifact_dir / "ttfb.csv")
     ttfb_groups = defaultdict(list)
     for row in ttfb_rows:
         try:
