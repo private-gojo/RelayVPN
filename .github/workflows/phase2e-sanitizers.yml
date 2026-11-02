@@ -1,0 +1,134 @@
+name: Phase 2e - ASan, UBSan, LSan, and runtime stress
+
+on:
+  push:
+    branches:
+      - phase2e/measurement-gate
+    paths:
+      - CMakeLists.txt
+      - base/**
+      - system/**
+      - flow/**
+      - flowextra/**
+      - misc/**
+      - structure/**
+      - tun2socks/**
+      - socksclient/**
+      - socks_udp_client/**
+      - udpgw_client/**
+      - tuntap/**
+      - lwip/**
+      - tests/CMakeLists.txt
+      - tests/tcp_ring_buffer_test.c
+      - tests/tcp_ring_buffer_stress_test.c
+      - tests/tcp_window_config_test.c
+      - tests/chunkbuffer2_test.c
+      - tests/bproto_test.c
+      - tests/relayvpn-engine-dispatch.sh
+      - tests/engine-baseline.sh
+      - third_party/hev-socks5-tunnel/**
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  sanitizer-runtime:
+    name: Sanitizer checks and S1-S3 runtime validation
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    env:
+      ASAN_OPTIONS: detect_leaks=1:abort_on_error=1:strict_string_checks=1
+      UBSAN_OPTIONS: halt_on_error=1:print_stacktrace=1
+      LSAN_OPTIONS: exitcode=23
+    steps:
+      - name: Checkout RelayVPN
+        uses: actions/checkout@v4
+
+      - name: Install runtime test dependencies
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y build-essential cmake iproute2 iputils-ping curl openssh-client openssh-server
+          sudo modprobe tun
+          test -c /dev/net/tun
+
+      - name: Configure ASan and UBSan build
+        run: |
+          set -euo pipefail
+          cmake -S . -B "$RUNNER_TEMP/relayvpn-sanitizer-build" \
+            -G "Unix Makefiles" \
+            -DBUILD_NOTHING_BY_DEFAULT=ON \
+            -DBUILD_TESTS=ON \
+            -DBUILD_TUN2SOCKS=ON \
+            -DBUILD_UDPGW=ON \
+            -DBUILD_HEV=ON \
+            -DCMAKE_BUILD_TYPE=Debug \
+            "-DCMAKE_C_FLAGS=-O1 -fno-omit-frame-pointer -fsanitize=address,undefined" \
+            "-DCMAKE_EXE_LINKER_FLAGS=-fsanitize=address,undefined"
+
+      - name: Build instrumented BadVPN and runtime targets
+        run: |
+          set -euo pipefail
+          cmake --build "$RUNNER_TEMP/relayvpn-sanitizer-build" \
+            --target badvpn-tun2socks tcp_ring_buffer_test tcp_ring_buffer_stress_test \
+              chunkbuffer2_test bproto_test tcp_window_config_test hev-bin \
+            --parallel 2
+          BADVPN_BIN="$RUNNER_TEMP/relayvpn-sanitizer-build/tun2socks/badvpn-tun2socks"
+          ldd "$BADVPN_BIN" | grep -q 'libasan'
+          ldd "$BADVPN_BIN" | grep -q 'libubsan'
+          test -x third_party/hev-socks5-tunnel/bin/hev-socks5-tunnel
+
+      - name: S1 - Sanitized unit and randomized ring-buffer stress tests
+        run: |
+          set -euo pipefail
+          BUILD_DIR="$RUNNER_TEMP/relayvpn-sanitizer-build/tests"
+          "$BUILD_DIR/tcp_ring_buffer_test"
+          "$BUILD_DIR/tcp_ring_buffer_stress_test"
+          "$BUILD_DIR/chunkbuffer2_test"
+          "$BUILD_DIR/bproto_test"
+          "$BUILD_DIR/tcp_window_config_test"
+          bash tests/relayvpn-engine-dispatch.sh
+
+      - name: S2 - Functional flow smoke test
+        run: |
+          set -euo pipefail
+          ROOT="$RUNNER_TEMP/phase2e-sanitizer-s2"
+          ARTIFACTS="$GITHUB_WORKSPACE/phase2e-sanitizer-artifacts/s2"
+          RELAYVPN_BUILD_DIR="$RUNNER_TEMP/relayvpn-sanitizer-build" \
+          RELAYVPN_BENCHMARK_ROOT="$ROOT" \
+          RELAYVPN_BENCHMARK_ARTIFACT_DIR="$ARTIFACTS" \
+          RELAYVPN_BENCHMARK_FILE_SIZE=1048576 \
+          RELAYVPN_BENCHMARK_ROUNDS=1 \
+          RELAYVPN_BENCHMARK_CONCURRENT_CLIENTS=4 \
+            bash tests/engine-baseline.sh
+          if grep -En 'AddressSanitizer|LeakSanitizer|runtime error:' "$ROOT/logs/badvpn.log"; then
+            echo "Sanitizer finding in S2 BadVPN runtime log" >&2
+            exit 1
+          fi
+
+      - name: S3 - Concurrent TCP stress test
+        run: |
+          set -euo pipefail
+          ROOT="$RUNNER_TEMP/phase2e-sanitizer-s3"
+          ARTIFACTS="$GITHUB_WORKSPACE/phase2e-sanitizer-artifacts/s3"
+          RELAYVPN_BUILD_DIR="$RUNNER_TEMP/relayvpn-sanitizer-build" \
+          RELAYVPN_BENCHMARK_ROOT="$ROOT" \
+          RELAYVPN_BENCHMARK_ARTIFACT_DIR="$ARTIFACTS" \
+          RELAYVPN_BENCHMARK_FILE_SIZE=8388608 \
+          RELAYVPN_BENCHMARK_ROUNDS=1,2 \
+          RELAYVPN_BENCHMARK_CONCURRENT_CLIENTS=64 \
+            bash tests/engine-baseline.sh
+          if grep -En 'AddressSanitizer|LeakSanitizer|runtime error:' "$ROOT/logs/badvpn.log"; then
+            echo "Sanitizer finding in S3 BadVPN runtime log" >&2
+            exit 1
+          fi
+
+      - name: Upload sanitizer runtime logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: relayvpn-phase2e-sanitizer-runtime
+          path: phase2e-sanitizer-artifacts/
+          if-no-files-found: warn
+          retention-days: 30

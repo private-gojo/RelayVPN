@@ -1,0 +1,32 @@
+name: Phase 2e - Report validation
+
+on:
+  push:
+    branches:
+      - phase2e/measurement-gate
+    paths:
+      - .github/workflows/phase2e-report-validation.yml
+      - tests/bench/measure.py
+      - tests/bench/summarize.py
+      - tests/bench/test_*.py
+
+permissions:
+  contents: read
+
+jobs:
+  validate-report:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout RelayVPN
+        uses: actions/checkout@v4
+
+      - name: Validate report tooling
+        run: |
+          set -euo pipefail
+          python3 -m py_compile \
+            tests/bench/measure.py \
+            tests/bench/summarize.py \
+            tests/bench/test_summarize.py \
+            tests/bench/test_path_stats.py
+          python3 -m unittest discover -s tests/bench -p 'test_*.py' -v

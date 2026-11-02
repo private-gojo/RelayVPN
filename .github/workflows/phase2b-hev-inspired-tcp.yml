@@ -6,9 +6,6 @@ on:
       - phase2b/hev-inspired-tcp
       - phase2b/tcp-to-socks-ring
       - phase2c/tcp-to-tun-ack-ring
-  pull_request:
-    branches:
-      - main
   workflow_dispatch:
 
 permissions:

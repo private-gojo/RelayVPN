@@ -4,9 +4,6 @@ on:
   push:
     branches:
       - phase2d/tcp-window-bdp
-  pull_request:
-    branches:
-      - main
   workflow_dispatch:
 
 permissions:

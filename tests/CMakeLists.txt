@@ -7,6 +7,11 @@ add_executable(tcp_ring_buffer_test
     ../tun2socks/tcp_ring_buffer.c
 )
 
+add_executable(tcp_ring_buffer_stress_test
+    tcp_ring_buffer_stress_test.c
+    ../tun2socks/tcp_ring_buffer.c
+)
+
 add_executable(tcp_window_config_test tcp_window_config_test.c)
 
 if (BUILDING_THREADWORK)

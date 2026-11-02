@@ -1,19 +1,16 @@
-name: Phase 1d - Hev UDP runtime
+name: Phase 1d - Hev SOCKS5 UDP ASSOCIATE runtime
 
 on:
   push:
     branches:
       - phase1d/hev-udp-runtime
-  pull_request:
-    branches:
-      - main
   workflow_dispatch:
 
 permissions:
   contents: read
 
 jobs:
-  hev-udp-runtime:
+  hev-socks5-udp-runtime:
     runs-on: ubuntu-latest
     timeout-minutes: 20
 
@@ -54,7 +51,7 @@ jobs:
           cmake --build "$RUNNER_TEMP/relayvpn-phase1d-build" --target hev-bin --parallel 2
           test -x third_party/hev-socks5-tunnel/bin/hev-socks5-tunnel
 
-      - name: Run TUN to Hev to SOCKS5 UDP relay integration test
+      - name: Run TUN to Hev to SOCKS5 UDP ASSOCIATE integration test
         shell: bash
         run: |
           set -euo pipefail
@@ -130,7 +127,7 @@ jobs:
           sudo ip -n cli link set tun0 up
           sudo ip -n cli route add default dev tun0
 
-          echo '--- UDP runtime test ---'
+          echo '--- SOCKS5 UDP ASSOCIATE runtime test ---'
           sudo ip netns exec cli python3 tests/hev-udp-client.py
 
           echo '--- SIGTERM lifecycle test ---'
@@ -162,7 +159,7 @@ jobs:
           cat "$ROOT/logs/socks5-udp-proxy.log"
 
           {
-            echo "## Phase 1d Hev UDP runtime"
+            echo "## Phase 1d Hev SOCKS5 UDP ASSOCIATE runtime"
             echo "- SOCKS5 UDP ASSOCIATE round trip: PASS"
             echo "- SIGTERM and TUN cleanup: PASS"
           } >> "$GITHUB_STEP_SUMMARY"

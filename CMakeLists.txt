@@ -421,7 +421,9 @@ endif ()
 if (NOT WIN32)
     if (BUILD_TUN2SOCKS OR BUILD_HEV)
         install(
-            PROGRAMS "${CMAKE_CURRENT_SOURCE_DIR}/scripts/relayvpn"
+            PROGRAMS
+                "${CMAKE_CURRENT_SOURCE_DIR}/scripts/relayvpn"
+                "${CMAKE_CURRENT_SOURCE_DIR}/scripts/relayvpn-doctor"
             DESTINATION ${CMAKE_INSTALL_BINDIR}
         )
     endif ()

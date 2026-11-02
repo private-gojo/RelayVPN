@@ -1,0 +1,89 @@
+name: CI Required
+
+on:
+  push:
+    branches:
+      - main
+      - phase2e/measurement-gate
+  pull_request:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-required-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  ci-required:
+    name: CI Required
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout RelayVPN
+        uses: actions/checkout@v4
+
+      - name: Install build tools
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y build-essential cmake
+
+      - name: Configure both engines and regression tests
+        run: |
+          set -euo pipefail
+          cmake -S . -B "$RUNNER_TEMP/relayvpn-ci-build" \
+            -G "Unix Makefiles" \
+            -DBUILD_NOTHING_BY_DEFAULT=ON \
+            -DBUILD_TESTS=ON \
+            -DBUILD_TUN2SOCKS=ON \
+            -DBUILD_UDPGW=ON \
+            -DBUILD_HEV=ON
+
+      - name: Build engines and test targets
+        run: |
+          set -euo pipefail
+          cmake --build "$RUNNER_TEMP/relayvpn-ci-build" \
+            --target badvpn-tun2socks badvpn-udpgw hev-bin \
+              tcp_ring_buffer_test tcp_ring_buffer_stress_test \
+              chunkbuffer2_test bproto_test tcp_window_config_test \
+            --parallel 2
+
+      - name: Verify Hev has no vendored shared-library dependencies
+        run: |
+          set -euo pipefail
+          HEV_BIN="third_party/hev-socks5-tunnel/bin/hev-socks5-tunnel"
+          test -x "$HEV_BIN"
+          ldd "$HEV_BIN" | tee "$RUNNER_TEMP/hev-ldd.txt"
+          if grep -q 'not found' "$RUNNER_TEMP/hev-ldd.txt"; then
+            echo "Hev has an unresolved shared-library dependency" >&2
+            exit 1
+          fi
+          if grep -Eq 'lib(yaml|lwip|hev-task-system)\.so' "$RUNNER_TEMP/hev-ldd.txt"; then
+            echo "Hev unexpectedly depends on a vendored shared library" >&2
+            exit 1
+          fi
+
+      - name: Run unit, stress, dispatcher, and doctor tests
+        run: |
+          set -euo pipefail
+          TEST_DIR="$RUNNER_TEMP/relayvpn-ci-build/tests"
+          "$TEST_DIR/tcp_ring_buffer_test"
+          "$TEST_DIR/tcp_ring_buffer_stress_test"
+          "$TEST_DIR/chunkbuffer2_test"
+          "$TEST_DIR/bproto_test"
+          "$TEST_DIR/tcp_window_config_test"
+          bash tests/relayvpn-engine-dispatch.sh
+          bash tests/relayvpn-doctor-test.sh
+
+      - name: Verify installed tools
+        run: |
+          set -euo pipefail
+          PREFIX="$RUNNER_TEMP/relayvpn-ci-install"
+          cmake --install "$RUNNER_TEMP/relayvpn-ci-build" --prefix "$PREFIX"
+          test -x "$PREFIX/bin/relayvpn"
+          test -x "$PREFIX/bin/relayvpn-doctor"
+          "$PREFIX/bin/relayvpn-doctor" --help

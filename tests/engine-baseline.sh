@@ -17,6 +17,24 @@ else
     DELAY_PROFILES=(0)
     ROUNDS=(1 2 3)
 fi
+
+FILE_SIZE="${RELAYVPN_BENCHMARK_FILE_SIZE:-$FILE_SIZE}"
+CONCURRENT_CLIENTS="${RELAYVPN_BENCHMARK_CONCURRENT_CLIENTS:-50}"
+if [[ -n "${RELAYVPN_BENCHMARK_ROUNDS:-}" ]]; then
+    IFS=',' read -r -a ROUNDS <<< "$RELAYVPN_BENCHMARK_ROUNDS"
+fi
+if ! [[ "$FILE_SIZE" =~ ^[1-9][0-9]*$ ]] ||
+   ! [[ "$CONCURRENT_CLIENTS" =~ ^[1-9][0-9]*$ ]]; then
+    echo "Invalid benchmark file size or concurrency value" >&2
+    exit 2
+fi
+for round in "${ROUNDS[@]}"; do
+    if ! [[ "$round" =~ ^[1-9][0-9]*$ ]]; then
+        echo "Invalid benchmark round: $round" >&2
+        exit 2
+    fi
+done
+
 ENGINE_PID=""
 SAMPLE_PID=""
 SSH_PID=""
@@ -58,7 +76,9 @@ sudo ip -n cli link set lo up
 sudo ip -n cli link set veth-cli up
 sudo ip addr add 198.51.100.10/32 dev lo
 
-sudo useradd --create-home --shell /bin/bash relayvpn-test
+if ! id relayvpn-test >/dev/null 2>&1; then
+    sudo useradd --create-home --shell /bin/bash relayvpn-test
+fi
 sudo usermod --password '*' relayvpn-test
 sudo install -d -m 700 -o relayvpn-test -g relayvpn-test /home/relayvpn-test/.ssh
 ssh-keygen -q -t ed25519 -N '' -f "$ROOT/id_ed25519"
@@ -124,13 +144,21 @@ EOF
 start_engine() {
     local engine="$1"
     if [[ "$engine" == "badvpn" ]]; then
-        sudo bash -c 'exec ip netns exec cli "$@"' _ "$TUN_BIN" \
+        sudo env \
+            ASAN_OPTIONS="${ASAN_OPTIONS:-}" \
+            UBSAN_OPTIONS="${UBSAN_OPTIONS:-}" \
+            LSAN_OPTIONS="${LSAN_OPTIONS:-}" \
+            bash -c 'exec ip netns exec cli "$@"' _ "$TUN_BIN" \
             --tundev tun0 --netif-ipaddr 198.18.0.1 \
             --netif-netmask 255.255.255.0 \
             --socks-server-addr 10.200.0.1:1080 \
             --loglevel warning > "$ROOT/logs/badvpn.log" 2>&1 &
     else
-        sudo bash -c 'exec ip netns exec cli "$@"' _ "$HEV_BIN" "$ROOT/hev.yml" > "$ROOT/logs/hev.log" 2>&1 &
+        sudo env \
+            ASAN_OPTIONS="${ASAN_OPTIONS:-}" \
+            UBSAN_OPTIONS="${UBSAN_OPTIONS:-}" \
+            LSAN_OPTIONS="${LSAN_OPTIONS:-}" \
+            bash -c 'exec ip netns exec cli "$@"' _ "$HEV_BIN" "$ROOT/hev.yml" > "$ROOT/logs/hev.log" 2>&1 &
     fi
     ENGINE_PID=$!
     for i in $(seq 1 30); do
@@ -210,12 +238,12 @@ benchmark_engine() {
             mbps="$(awk -v b="$bytes" -v ms="$elapsed" 'BEGIN { if (ms > 0) printf "%.2f", (b * 8 / 1000000) / (ms / 1000); else print "0" }')"
             printf '%s,%s,%s,%s,%s,%s\n' "$engine" "$delay_ms" "$round" "$bytes" "$elapsed" "$mbps" | tee -a "$ARTIFACT_DIR/throughput.csv"
         done
-        seq 1 50 | xargs -P 50 -I{} sh -c '
+        seq 1 "$CONCURRENT_CLIENTS" | xargs -P "$CONCURRENT_CLIENTS" -I{} sh -c '
             sudo ip netns exec cli curl --noproxy "*" --fail --silent --show-error \
               http://198.51.100.10:8080/small.txt -o "$1/$2-$3-parallel-{}.txt"
             cmp "$1/www/small.txt" "$1/$2-$3-parallel-{}.txt"
         ' _ "$ROOT" "$engine" "$delay_ms"
-        echo "$engine: 50/50 concurrent TCP requests passed at ${delay_ms}ms one-way delay"
+        echo "$engine: $CONCURRENT_CLIENTS/$CONCURRENT_CLIENTS concurrent TCP requests passed at ${delay_ms}ms one-way delay"
     done
     stop_engine "$engine"
 }

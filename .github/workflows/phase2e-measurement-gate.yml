@@ -1,0 +1,128 @@
+name: Phase 2e - Measurement gate
+
+on:
+  push:
+    branches:
+      - phase2e/measurement-gate
+    paths:
+      - tun2socks/tun2socks.c
+      - tun2socks/tun2socks.h
+      - tun2socks/tcp_ring_buffer.c
+      - tun2socks/tcp_ring_buffer.h
+      - lwip/custom/lwipopts.h
+      - tests/bench/build-and-measure.sh
+      - tests/bench/config_probe.c
+      - tests/bench/server.py
+      - tests/bench/hold_clients.py
+      - tests/bench/measure.py
+  workflow_dispatch:
+    inputs:
+      source_run_id:
+        description: Workflow run containing the partial WP1 measurements
+        required: true
+        default: "41496315274"
+
+permissions:
+  actions: read
+  contents: read
+
+concurrency:
+  group: phase2e-bench-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  phase2e-benchmark:
+    name: Targeted recovery, calibration, and memory comparison
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    env:
+      PHASE2E_SOURCE_RUN_ID: ${{ github.event.inputs.source_run_id || '41496315274' }}
+    steps:
+      - name: Checkout full history
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Download previous partial measurements
+        uses: actions/download-artifact@v4
+        with:
+          name: relayvpn-phase2e-recovered
+          run-id: ${{ github.event.inputs.source_run_id || '41496315274' }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          path: phase2e-previous
+
+      - name: Install benchmark dependencies
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential cmake ccache iproute2 iputils-ping curl \
+            openssh-client openssh-server python3 dwarves
+          sudo modprobe tun
+          sudo modprobe ifb
+          test -c /dev/net/tun
+          pahole --version
+          python3 --version
+
+      - name: Configure compiler cache
+        run: |
+          set -euo pipefail
+          echo "CCACHE_DIR=$RUNNER_TEMP/phase2e-ccache" >> "$GITHUB_ENV"
+          echo "CCACHE_BASEDIR=$RUNNER_TEMP" >> "$GITHUB_ENV"
+          echo "CCACHE_MAXSIZE=3G" >> "$GITHUB_ENV"
+          mkdir -p "$RUNNER_TEMP/phase2e-ccache"
+
+      - name: Restore C compiler cache
+        uses: actions/cache/restore@v4
+        with:
+          path: ${{ runner.temp }}/phase2e-ccache
+          key: phase2e-ccache-${{ runner.os }}-${{ runner.arch }}-${{ github.sha }}
+          restore-keys: |
+            phase2e-ccache-${{ runner.os }}-${{ runner.arch }}-
+
+      - name: Validate harness syntax
+        run: |
+          set -euo pipefail
+          bash -n tests/bench/build-and-measure.sh
+          python3 -m py_compile \
+            tests/bench/server.py \
+            tests/bench/hold_clients.py \
+            tests/bench/measure.py \
+            tests/bench/summarize.py \
+            tests/bench/test_path_stats.py
+          python3 -m unittest discover -s tests/bench -p 'test_*.py' -v
+
+      - name: Build historical revisions and run targeted WP1 recovery plus WP2
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo --preserve-env=GITHUB_WORKSPACE,RUNNER_TEMP,PHASE2E_SOURCE_RUN_ID,CCACHE_DIR,CCACHE_BASEDIR,CCACHE_MAXSIZE \
+            bash tests/bench/build-and-measure.sh
+
+      - name: Make compiler cache readable
+        if: always()
+        run: sudo chmod -R a+rwX "$RUNNER_TEMP/phase2e-ccache" 2>/dev/null || true
+
+      - name: Show compiler cache statistics
+        if: always()
+        run: ccache --show-stats || true
+
+      - name: Save compiler cache
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: ${{ runner.temp }}/phase2e-ccache
+          key: phase2e-ccache-${{ runner.os }}-${{ runner.arch }}-${{ github.sha }}
+
+      - name: Make root-generated logs readable
+        if: always()
+        run: sudo chmod -R a+rX phase2e-artifacts/ 2>/dev/null || true
+
+      - name: Upload recovered measurement gate artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: relayvpn-phase2e-recovered
+          path: phase2e-artifacts/
+          if-no-files-found: warn
+          retention-days: 30
