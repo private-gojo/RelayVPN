@@ -64,6 +64,15 @@ Windows builds are not provided. You can build from source code using Visual Stu
 following the instructions in the file `BUILD-WINDOWS-VisualStudio.md`.
 
 
+## Engine capabilities
+
+| Engine | TCP transport | UDP transport | Configuration |
+| --- | --- | --- | --- |
+| BadVPN | SOCKS5 TCP | UDPGW or SOCKS5 UDP (`--socks5-udp`) | Native command-line options |
+| Hev | SOCKS5 TCP | SOCKS5 UDP ASSOCIATE | YAML configuration |
+
+The Phase 1d runtime check validates a TUN-to-Hev-to-SOCKS5 UDP ASSOCIATE round trip against a test proxy. It does not validate the separate BadVPN UDPGW path.
+
 ## Tun2socks engines
 
 RelayVPN provides two independent tun2socks engines. Build both on Linux with:
@@ -84,6 +93,8 @@ relayvpn hev /path/to/hev.yml
 BadVPN retains its existing CLI options and UDPGW/SOCKS UDP modes. Hev uses its own YAML configuration and native SOCKS5 TCP/UDP support. The engines are alternatives for a TUN interface: run only one engine against a given TUN interface at a time.
 
 The dispatcher searches beside itself first, then the repository build output and `PATH`. Override binary locations with `RELAYVPN_BADVPN_BIN` or `RELAYVPN_HEV_BIN`. The current RelayVPN CMake integration builds Hev on native Linux; upstream Hev supports additional platforms independently.
+
+Run `relayvpn-doctor` after installation to inspect engine binaries, shared-library resolution, TUN-device availability, and basic privilege requirements. The doctor reports missing TUN access as a warning because Android VPNService and other VPN hosts may provide a TUN file descriptor without exposing `/dev/net/tun`.
 
 ## License
 
