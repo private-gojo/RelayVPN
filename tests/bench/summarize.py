@@ -109,6 +109,10 @@ def validate_artifacts(artifact_dir, arms):
 
     memory_rows = read_csv(artifact_dir / "memory.csv")
     memory_groups = defaultdict(list)
+    memory_sha = {
+        arm["label"]: arm["sha"].lower()
+        for arm in arms if arm["kind"] == "badvpn"
+    }
     for row in memory_rows:
         try:
             key = (row["arm"], row["mode"], int(row["requested"]))
@@ -117,6 +121,8 @@ def validate_artifacts(artifact_dir, arms):
         except (KeyError, TypeError, ValueError):
             errors.append("memory.csv contains a malformed measurement row")
             continue
+        if key[0] in memory_sha and row.get("commit", "").lower() != memory_sha[key[0]]:
+            errors.append("%s %s N=%d: commit SHA mismatch" % key)
         if connected < 0 or connected > key[2] or client_errors < 0:
             errors.append("%s %s N=%d: invalid connection counters" % key)
         elif key[2] <= 1024 and (connected != key[2] or client_errors != 0):
