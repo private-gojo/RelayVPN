@@ -153,7 +153,7 @@ jobs:
           kill -0 "$HTTP_PID"
           kill -0 "$ECHO_PID"
 
-          "$TUN_BIN" \
+          sudo bash -c 'exec ip netns exec cli "$@"' _ "$TUN_BIN" \
             --tundev tun0 \
             --netif-ipaddr 198.18.0.1 \
             --netif-netmask 255.255.255.0 \
