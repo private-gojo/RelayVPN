@@ -76,7 +76,9 @@ sudo ip -n cli link set lo up
 sudo ip -n cli link set veth-cli up
 sudo ip addr add 198.51.100.10/32 dev lo
 
-sudo useradd --create-home --shell /bin/bash relayvpn-test
+if ! id relayvpn-test >/dev/null 2>&1; then
+    sudo useradd --create-home --shell /bin/bash relayvpn-test
+fi
 sudo usermod --password '*' relayvpn-test
 sudo install -d -m 700 -o relayvpn-test -g relayvpn-test /home/relayvpn-test/.ssh
 ssh-keygen -q -t ed25519 -N '' -f "$ROOT/id_ed25519"
