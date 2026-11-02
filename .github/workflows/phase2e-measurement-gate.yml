@@ -1,0 +1,66 @@
+name: Phase 2e - Measurement gate
+
+on:
+  push:
+    branches:
+      - phase2e/measurement-gate
+  workflow_dispatch:
+  schedule:
+    - cron: "17 19 * * *"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: phase2e-bench-\${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  phase2e-benchmark:
+    name: Historical throughput and memory comparison
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    steps:
+      - name: Checkout full history
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install benchmark dependencies
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential cmake iproute2 iputils-ping curl \
+            openssh-client openssh-server python3 dwarves
+          sudo modprobe tun
+          sudo modprobe ifb
+          test -c /dev/net/tun
+          pahole --version
+          python3 --version
+
+      - name: Validate harness syntax
+        run: |
+          set -euo pipefail
+          bash -n tests/bench/build-and-measure.sh
+          python3 -m py_compile \
+            tests/bench/server.py \
+            tests/bench/hold_clients.py \
+            tests/bench/measure.py \
+            tests/bench/summarize.py
+
+      - name: Build historical revisions and run WP1/WP2
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo --preserve-env=GITHUB_WORKSPACE,RUNNER_TEMP \
+            bash tests/bench/build-and-measure.sh
+
+      - name: Upload measurement gate artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: relayvpn-phase2e-measurement-gate
+          path: phase2e-artifacts/
+          if-no-files-found: warn
+          retention-days: 30
