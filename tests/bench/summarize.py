@@ -119,6 +119,9 @@ def validate_artifacts(artifact_dir, arms):
             continue
         if connected < 0 or connected > key[2] or client_errors < 0:
             errors.append("%s %s N=%d: invalid connection counters" % key)
+        elif key[2] <= 1024 and (connected != key[2] or client_errors != 0):
+            errors.append("%s %s N=%d: incomplete client establishment (%d connected, %d errors)" %
+                          (key[0], key[1], key[2], connected, client_errors))
         memory_groups[key].append(row)
 
     badvpn_arms = [arm for arm in arms if arm["kind"] == "badvpn"]
