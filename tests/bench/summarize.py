@@ -83,6 +83,18 @@ def main():
         if int(row["errors"]) == 0:
             grouped[key].append(row)
 
+    calibration_path = artifact_dir / "calibration.csv"
+    calibration_rows = read_csv(calibration_path) if calibration_path.is_file() else []
+    calibration_stats = stats([
+        number(row, "throughput_mbps")
+        for row in calibration_rows if row["errors"] == "0"
+    ])
+    calibration_cv_pct = (
+        math.ceil(calibration_stats["cv"] * 100 * 100) / 100.0
+        if calibration_stats else None
+    )
+    noise_floor_pct = calibration_cv_pct * 2 if calibration_cv_pct is not None else None
+
     lines = [
         "# Phase 2e measurement report",
         "",
@@ -96,11 +108,6 @@ def main():
         "Path validity counts TUN RX/TX drops, IFB TX drops, and qdisc drops. IFB RX rx_dropped is excluded because the IFB driver increments it for packets lacking redirect metadata.",
         "TUN and IFB netdevice transmit queues are set to 65,536 packets to keep the virtual TUN read ring from becoming the benchmark bottleneck.",
         "Outer SSH transport uses the veth link without injected delay. The HTTP endpoint is reached through the SSH dynamic SOCKS tunnel.",
-        "",
-        "## Throughput, CPU, and RSS",
-        "",
-        "| RTT | Flows | Arm | Median Mbps | p25–p75 | Min–max | CV | CPU s/GiB | RSS KiB | HWM KiB | Errors |",
-        "|---:|---:|---|---:|---:|---:|---:|---:|---:|---:|---:|",
     ]
 
     resume_plan_path = artifact_dir / "resume-plan.json"
@@ -121,6 +128,14 @@ def main():
         if resume_plan["rerun_ttfb_profiles"]:
             lines.append("Rerun TTFB profiles: " + ", ".join(resume_plan["rerun_ttfb_profiles"]) + ".")
         lines.append("source-system-info.txt records the runner used for retained measurements; system-info.txt records the runner used for reruns, calibration, and memory tests.")
+
+    lines.extend([
+        "",
+        "## Throughput, CPU, and RSS",
+        "",
+        "| RTT | Flows | Arm | Median Mbps | p25–p75 | Min–max | CV | CPU s/GiB | RSS KiB | HWM KiB | Errors |",
+        "|---:|---:|---|---:|---:|---:|---:|---:|---:|---:|---:|",
+    ])
 
     profile_stats = {}
     for rtt in (0, 10, 25, 50):
@@ -155,7 +170,9 @@ def main():
         "## Paired throughput deltas",
         "",
         "Deltas compare the same measured round number against BASE. Positive values mean higher throughput.",
-        "Noise flag uses the larger of BASE and candidate CV; a delta smaller than 2× that CV is within noise.",
+        "Noise assessment uses a conservative calibrated floor of %s; smaller absolute deltas are treated as within measurement noise. This is an interpretation aid, not a pass/fail gate." % (
+            fmt(noise_floor_pct) + "%" if noise_floor_pct is not None else "unavailable"
+        ),
         "",
         "| RTT | Flows | Arm | vs BASE | vs Previous | Noise assessment |",
         "|---:|---:|---|---:|---:|---|",
@@ -175,8 +192,6 @@ def main():
                     int(row["round"]): row
                     for row in grouped.get((label, rtt, concurrency), [])
                 }
-                candidate_stats = profile_stats.get((label, rtt, concurrency))
-                base_stats = profile_stats.get(("BASE", rtt, concurrency))
                 base_deltas = []
                 previous_deltas = []
                 for round_number, candidate in candidate_rows.items():
@@ -192,16 +207,14 @@ def main():
                             number(prior, "throughput_mbps")))
                 base_delta = statistics.median([x for x in base_deltas if x is not None]) if base_deltas else None
                 prev_delta = statistics.median([x for x in previous_deltas if x is not None]) if previous_deltas else None
-                noise_cv = max(
-                    base_stats["cv"] if base_stats else 0.0,
-                    candidate_stats["cv"] if candidate_stats else 0.0,
-                )
-                assessment = (
-                    "within noise (<2×CV)"
-                    if base_delta is not None and abs(base_delta) < 2 * noise_cv * 100
-                    else "above noise" if base_delta is not None
-                    else "insufficient paired data"
-                )
+                if base_delta is None:
+                    assessment = "insufficient paired data"
+                elif noise_floor_pct is None:
+                    assessment = "calibration unavailable"
+                elif abs(base_delta) < noise_floor_pct:
+                    assessment = "within calibrated noise"
+                else:
+                    assessment = "above calibrated noise floor"
                 lines.append("| %d | %d | %s | %s%% | %s%% | %s |" % (
                     rtt, concurrency, label,
                     fmt(base_delta, 1), fmt(prev_delta, 1), assessment
@@ -260,19 +273,18 @@ def main():
         "## Runner noise calibration",
         "",
     ])
-    calibration = read_csv(artifact_dir / "calibration.csv")
-    calibration_stats = stats([number(row, "throughput_mbps") for row in calibration if row["errors"] == "0"])
     if calibration_stats:
         lines.append(
-            "Ten consecutive P2D runs on the same runner: median %.2f Mbps, p25–p75 %.2f–%.2f Mbps, CV %.2f%%, min–max %.2f–%.2f Mbps." % (
-                calibration_stats["median"], calibration_stats["p25"],
-                calibration_stats["p75"], calibration_stats["cv"] * 100,
-                calibration_stats["min"], calibration_stats["max"],
+            "%d valid consecutive P2D runs on the same runner: median %.2f Mbps, p25–p75 %.2f–%.2f Mbps, CV %.2f%%, min–max %.2f–%.2f Mbps." % (
+                calibration_stats["n"], calibration_stats["median"],
+                calibration_stats["p25"], calibration_stats["p75"],
+                calibration_stats["cv"] * 100, calibration_stats["min"],
+                calibration_stats["max"],
             )
         )
         lines.append(
-            "Provisional interpretation: do not claim gains smaller than 2×%.2f%% CV. This is a noise interpretation only, not a CI pass/fail threshold." % (
-                calibration_stats["cv"] * 100
+            "Conservative interpretation floor: 2× the CV rounded up to two decimals (%.2f%%). Gains smaller than this are treated as within measurement noise; this is not a CI pass/fail threshold." % (
+                noise_floor_pct
             )
         )
     else:

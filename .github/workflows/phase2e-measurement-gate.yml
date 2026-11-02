@@ -4,6 +4,11 @@ on:
   push:
     branches:
       - phase2e/measurement-gate
+    paths-ignore:
+      - .github/workflows/phase2e-measurement-gate.yml
+      - tests/bench/measure.py
+      - tests/bench/summarize.py
+      - tests/bench/test_summarize.py
   workflow_dispatch:
     inputs:
       source_run_id:

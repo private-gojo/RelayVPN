@@ -879,7 +879,7 @@ class Lab:
 
         plan = {
             "source_run_id": str(source_run_id),
-            "source_artifact": "relayvpn-phase2e-measurement-gate",
+            "source_artifact": "relayvpn-phase2e-recovered",
             "reused_profiles": reusable_profiles,
             "rerun_profiles": [
                 "RTT=%d C=%d" % profile for profile in rerun_profiles
