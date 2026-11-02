@@ -8,6 +8,7 @@ import os
 import pwd
 import random
 import re
+import secrets
 import shutil
 import signal
 from collections import defaultdict
@@ -22,7 +23,7 @@ IP = shutil.which("ip") or "/usr/sbin/ip"
 CURL = shutil.which("curl") or "/usr/bin/curl"
 SSH = shutil.which("ssh") or "/usr/bin/ssh"
 SSHD = shutil.which("sshd") or "/usr/sbin/sshd"
-USER = os.environ.get("SUDO_USER", "")
+USER = "relayvpn-test"
 HOST_IP = "10.200.0.1"
 CLIENT_IP = "10.200.0.2"
 TARGET_IP = "198.51.100.10"
@@ -177,11 +178,48 @@ class Lab:
         command([IP, "-n", "cli", "link", "set", "veth-cli", "up"])
         command([IP, "addr", "add", TARGET_IP + "/32", "dev", "lo"])
 
-        if not USER or USER == "root":
-            raise RuntimeError("SUDO_USER must identify the non-root Actions runner account")
+        if subprocess.run(
+            ["id", "-u", USER],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        ).returncode == 0:
+            raise RuntimeError("temporary SSH account already exists")
+
+        password = secrets.token_urlsafe(48)
+        password_result = subprocess.run(
+            ["openssl", "passwd", "-6", "-stdin"],
+            input=password + "\n",
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=15,
+        )
+        password = None
+        if password_result.returncode != 0:
+            raise RuntimeError("could not generate temporary SSH account hash")
+        password_hash = password_result.stdout.strip()
+        if not password_hash.startswith("$6$"):
+            raise RuntimeError("temporary SSH account hash format is invalid")
+
+        account_result = subprocess.run(
+            [
+                "useradd", "--no-create-home", "--user-group",
+                "--home-dir", str(self.work), "--shell", "/bin/sh",
+                "--password", password_hash, USER,
+            ],
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=120,
+        )
+        password_hash = ""
+        if account_result.returncode != 0:
+            raise RuntimeError(
+                "could not create temporary SSH account: "
+                + account_result.stderr.strip()
+            )
+        self.user_created = True
         account = pwd.getpwnam(USER)
-        if account.pw_uid == 0 or not account.pw_shell:
-            raise RuntimeError("SUDO_USER does not resolve to a valid non-root account")
 
         key = self.work / "id_ed25519"
         if not key.exists():
@@ -215,6 +253,7 @@ class Lab:
             "AllowUsers %s\n"
             "AllowTcpForwarding yes\n"
             "PermitOpen any\n"
+            "MaxSessions 0\n"
             "UsePAM no\n"
             "StrictModes yes\n"
             "LogLevel INFO\n" % (SSH_PORT, self.work / "sshd.pid", authorized, USER),
@@ -1113,6 +1152,9 @@ class Lab:
         if self.ssh_key_dir is not None:
             shutil.rmtree(self.ssh_key_dir, ignore_errors=True)
             self.ssh_key_dir = None
+        if self.user_created:
+            command(["userdel", USER], check=False, capture=True)
+            self.user_created = False
 
 
 
