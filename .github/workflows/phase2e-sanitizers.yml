@@ -116,7 +116,7 @@ jobs:
           RELAYVPN_BENCHMARK_ROUNDS=1 \
           RELAYVPN_BENCHMARK_CONCURRENT_CLIENTS=4 \
             bash tests/engine-baseline.sh
-          if grep -En 'ERROR: AddressSanitizer|LeakSanitizer: detected memory leaks|runtime error:' "$ROOT/logs/badvpn.log"; then
+          if grep -En 'AddressSanitizer|LeakSanitizer|runtime error:' "$ROOT/logs/badvpn.log"; then
             echo "Sanitizer finding in S2 BadVPN runtime log" >&2
             exit 1
           fi
@@ -133,7 +133,7 @@ jobs:
           RELAYVPN_BENCHMARK_ROUNDS=1,2 \
           RELAYVPN_BENCHMARK_CONCURRENT_CLIENTS=64 \
             bash tests/engine-baseline.sh
-          if grep -En 'ERROR: AddressSanitizer|LeakSanitizer: detected memory leaks|runtime error:' "$ROOT/logs/badvpn.log"; then
+          if grep -En 'AddressSanitizer|LeakSanitizer|runtime error:' "$ROOT/logs/badvpn.log"; then
             echo "Sanitizer finding in S3 BadVPN runtime log" >&2
             exit 1
           fi
