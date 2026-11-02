@@ -346,9 +346,7 @@ class Lab:
         if not qdisc_sections:
             return None
         return sum(
-            int(value)
-            for section in qdisc_sections
-            for value in re.findall(r"\bdropped\s+(\d+)", section)
+            int(value) for value in re.findall(r"\bdropped\s+(\d+)", text)
         )
 
     def start_engine(self, arm):
