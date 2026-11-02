@@ -5,6 +5,7 @@ import hashlib
 import json
 import math
 import os
+import pwd
 import random
 import shutil
 import signal
@@ -179,8 +180,9 @@ class Lab:
         command(["usermod", "--password", "*", USER])
         home = Path("/home") / USER
         ssh_dir = home / ".ssh"
+        account = pwd.getpwnam(USER)
         ssh_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
-        os.chown(ssh_dir, 0, 0)
+        os.chown(ssh_dir, account.pw_uid, account.pw_gid)
         os.chmod(ssh_dir, 0o700)
 
         key = self.work / "id_ed25519"
@@ -189,7 +191,7 @@ class Lab:
         public_key = Path(str(key) + ".pub").read_text(encoding="ascii")
         authorized = ssh_dir / "authorized_keys"
         authorized.write_text(public_key, encoding="ascii")
-        os.chown(authorized, 0, 0)
+        os.chown(authorized, account.pw_uid, account.pw_gid)
         os.chmod(authorized, 0o600)
         command(["ssh-keygen", "-A"])
 
