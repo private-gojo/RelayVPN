@@ -142,13 +142,20 @@ EOF
 start_engine() {
     local engine="$1"
     if [[ "$engine" == "badvpn" ]]; then
-        sudo bash -c 'exec ip netns exec cli "$@"' _ "$TUN_BIN" \
+        sudo env \
+            ASAN_OPTIONS="${ASAN_OPTIONS:-}" \
+            UBSAN_OPTIONS="${UBSAN_OPTIONS:-}" \
+            LSAN_OPTIONS="${LSAN_OPTIONS:-}" \
+            bash -c 'exec ip netns exec cli "$@"' _ "$TUN_BIN" \
             --tundev tun0 --netif-ipaddr 198.18.0.1 \
             --netif-netmask 255.255.255.0 \
             --socks-server-addr 10.200.0.1:1080 \
             --loglevel warning > "$ROOT/logs/badvpn.log" 2>&1 &
     else
-        sudo --preserve-env=ASAN_OPTIONS,UBSAN_OPTIONS,LSAN_OPTIONS \\
+        sudo env \
+            ASAN_OPTIONS="${ASAN_OPTIONS:-}" \
+            UBSAN_OPTIONS="${UBSAN_OPTIONS:-}" \
+            LSAN_OPTIONS="${LSAN_OPTIONS:-}" \
             bash -c 'exec ip netns exec cli "$@"' _ "$HEV_BIN" "$ROOT/hev.yml" > "$ROOT/logs/hev.log" 2>&1 &
     fi
     ENGINE_PID=$!
@@ -234,7 +241,7 @@ benchmark_engine() {
               http://198.51.100.10:8080/small.txt -o "$1/$2-$3-parallel-{}.txt"
             cmp "$1/www/small.txt" "$1/$2-$3-parallel-{}.txt"
         ' _ "$ROOT" "$engine" "$delay_ms"
-        echo "$engine: 50/50 concurrent TCP requests passed at ${delay_ms}ms one-way delay"
+        echo "$engine: $CONCURRENT_CLIENTS/$CONCURRENT_CLIENTS concurrent TCP requests passed at ${delay_ms}ms one-way delay"
     done
     stop_engine "$engine"
 }
