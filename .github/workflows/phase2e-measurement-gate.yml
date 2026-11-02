@@ -4,16 +4,17 @@ on:
   push:
     branches:
       - phase2e/measurement-gate
-    paths-ignore:
-      - .github/workflows/phase2e-measurement-gate.yml
-      - .github/workflows/phase2e-report-validation.yml
-      - .github/workflows/phase2e-sanitizers.yml
-      - tests/CMakeLists.txt
-      - tests/engine-baseline.sh
-      - tests/tcp_ring_buffer_stress_test.c
+    paths:
+      - tun2socks/tun2socks.c
+      - tun2socks/tun2socks.h
+      - tun2socks/tcp_ring_buffer.c
+      - tun2socks/tcp_ring_buffer.h
+      - lwip/custom/lwipopts.h
+      - tests/bench/build-and-measure.sh
+      - tests/bench/config_probe.c
+      - tests/bench/server.py
+      - tests/bench/hold_clients.py
       - tests/bench/measure.py
-      - tests/bench/summarize.py
-      - tests/bench/test_summarize.py
   workflow_dispatch:
     inputs:
       source_run_id:
