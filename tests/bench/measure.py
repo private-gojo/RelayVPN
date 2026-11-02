@@ -396,11 +396,11 @@ class Lab:
             for value in re.findall(r"\bdropped\s+(\d+)", section)
         )
 
-        def device_drops(section):
+        def device_drop_counters(section):
             totals = {}
             lines = section.splitlines()
             for index, line in enumerate(lines):
-                header = re.match(r"^\s*(RX|TX):\s*(.+?)\s*$", line)
+                header = re.match(r"^\\s*(RX|TX):\\s*(.+?)\\s*$", line)
                 if not header or index + 1 >= len(lines):
                     continue
                 columns = header.group(2).split()
@@ -413,21 +413,24 @@ class Lab:
                     return None
             if set(totals) != {"RX", "TX"}:
                 return None
-            return sum(totals.values())
+            return totals
 
         link_sections = dict(re.findall(
-            r"=== (tun0|ifb0) link stats ===\s*(.*?)(?=\n===|\Z)", text, re.DOTALL
+            r"=== (tun0|ifb0) link stats ===\\s*(.*?)(?=\\n===|\\Z)", text, re.DOTALL
         ))
-        tun_drops = device_drops(link_sections.get("tun0", ""))
-        if tun_drops is None:
+        tun_counters = device_drop_counters(link_sections.get("tun0", ""))
+        if tun_counters is None:
             return None
 
-        ifb_drops = 0
+        ifb_tx_drops = 0
         if "ifb0" in link_sections:
-            ifb_drops = device_drops(link_sections["ifb0"])
-            if ifb_drops is None:
+            ifb_counters = device_drop_counters(link_sections["ifb0"])
+            if ifb_counters is None:
                 return None
-        return qdisc_drops + tun_drops + ifb_drops
+            # IFB RX rx_dropped includes packets without redirect metadata, not drops on the redirected benchmark path.
+            ifb_tx_drops = ifb_counters["TX"]
+
+        return qdisc_drops + tun_counters["RX"] + tun_counters["TX"] + ifb_tx_drops
 
     def start_engine(self, arm):
         if self.engine is not None:

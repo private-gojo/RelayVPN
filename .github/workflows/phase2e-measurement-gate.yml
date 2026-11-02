@@ -9,7 +9,7 @@ on:
       source_run_id:
         description: Workflow run containing the partial WP1 measurements
         required: true
-        default: "41413981032"
+        default: "41496315274"
 
 permissions:
   actions: read
@@ -25,7 +25,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 360
     env:
-      PHASE2E_SOURCE_RUN_ID: ${{ github.event.inputs.source_run_id || '41413981032' }}
+      PHASE2E_SOURCE_RUN_ID: ${{ github.event.inputs.source_run_id || '41496315274' }}
     steps:
       - name: Checkout full history
         uses: actions/checkout@v4
@@ -35,7 +35,7 @@ jobs:
       - name: Download previous partial measurements
         uses: actions/download-artifact@v4
         with:
-          name: relayvpn-phase2e-measurement-gate
+          name: relayvpn-phase2e-recovered
           run-id: ${{ github.event.inputs.source_run_id || '41413981032' }}
           github-token: ${{ secrets.GITHUB_TOKEN }}
           path: phase2e-previous

@@ -54,7 +54,7 @@ qdisc netem 2: root limit 32768
     TX:  bytes packets errors dropped carrier collsns
         1000 10 0 0 0 0
 """
-        self.assertEqual(measure.Lab.count_path_drops(stats), 9)
+        self.assertEqual(measure.Lab.count_path_drops(stats), 4)
 
     def test_missing_tun_link_counters_are_invalid(self):
         stats = """=== qdisc tun0 ===
