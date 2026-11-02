@@ -8,7 +8,7 @@ Target branch: `main`
 
 Enable:
 - Require a pull request before merging.
-- Require at least one approval (the repository owner may approve their own policy separately).
+- Require at least one approval from someone other than the pull request author. For a single-maintainer repository, add a second reviewer or deliberately configure an administrator bypass; self-approval does not satisfy this requirement.
 - Require status checks to pass before merging.
 - Require conversation resolution.
 - Block force pushes and branch deletion.
