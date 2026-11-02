@@ -55,7 +55,7 @@ build_switch(CLIENT "build badvpn-client" ${ON_IF_NOT_EMSCRIPTEN})
 build_switch(FLOODER "build badvpn-flooder" ${ON_IF_NOT_EMSCRIPTEN})
 build_switch(TUN2SOCKS "build badvpn-tun2socks" ${ON_IF_NOT_EMSCRIPTEN})
 build_switch(UDPGW "build badvpn-udpgw" ${ON_IF_NOT_EMSCRIPTEN})
-build_switch(HEV "build vendored Hev SOCKS5 Tunnel shared library" OFF)
+build_switch(HEV "build vendored Hev SOCKS5 Tunnel engine" OFF)
 build_switch(NCD "build badvpn-ncd" ${ON_IF_LINUX_OR_EMSCRIPTEN})
 build_switch(DOSTEST "build dostest-server and dostest-attacker" OFF)
 
@@ -406,11 +406,25 @@ if (BUILD_HEV)
         COMMENT "Building vendored Hev SOCKS5 Tunnel shared library"
     )
 
-    add_custom_target(hev-bin
+    add_custom_target(hev-bin ALL
         COMMAND "${HEV_MAKE_EXECUTABLE}" -C "${HEV_SOURCE_DIR}" exec
         BYPRODUCTS "${HEV_SOURCE_DIR}/bin/hev-socks5-tunnel"
         COMMENT "Building standalone Hev SOCKS5 Tunnel executable"
     )
+
+    install(
+        PROGRAMS "${HEV_SOURCE_DIR}/bin/hev-socks5-tunnel"
+        DESTINATION ${CMAKE_INSTALL_BINDIR}
+    )
+endif ()
+
+if (NOT WIN32)
+    if (BUILD_TUN2SOCKS OR BUILD_HEV)
+        install(
+            PROGRAMS "${CMAKE_CURRENT_SOURCE_DIR}/scripts/relayvpn"
+            DESTINATION ${CMAKE_INSTALL_BINDIR}
+        )
+    endif ()
 endif ()
 
 message(STATUS "Building components:")
