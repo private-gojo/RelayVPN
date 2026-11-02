@@ -74,6 +74,10 @@
 
 #include <tun2socks/tun2socks.h>
 
+#if CLIENT_SOCKS_RECV_BUF_SIZE < TCP_SND_BUF
+#error "SOCKS-to-TCP ring capacity must cover the lwIP TCP send buffer"
+#endif
+
 #include <generated/blog_channel_tun2socks.h>
 
 #define LOGGER_STDOUT 1
@@ -140,10 +144,10 @@ struct tcp_client {
     StreamPassInterface *socks_send_if;
     StreamRecvInterface *socks_recv_if;
     uint8_t socks_recv_buf[CLIENT_SOCKS_RECV_BUF_SIZE];
-    int socks_recv_buf_used;
-    int socks_recv_buf_sent;
-    int socks_recv_waiting;
-    int socks_recv_tcp_pending;
+    TcpRingBuffer socks_recv_ring;
+    int socks_recv_pending;
+    int socks_recv_len;
+    int tcp_close_pending;
 };
 
 // IP address of netif
@@ -1321,6 +1325,18 @@ err_t listener_accept_func (void *arg, struct tcp_pcb *newpcb, err_t err)
     }
     client->socks_send_pending = 0;
     client->socks_send_len = 0;
+    if (TcpRingBuffer_Init(
+        &client->socks_recv_ring,
+        client->socks_recv_buf,
+        sizeof(client->socks_recv_buf)
+    ) < 0) {
+        BLog(BLOG_ERROR, "listener accept: SOCKS-to-TCP ring initialization failed");
+        free(client);
+        goto fail0;
+    }
+    client->socks_recv_pending = 0;
+    client->socks_recv_len = 0;
+    client->tcp_close_pending = 0;
     
     SYNC_DECL
     SYNC_FROMHERE
@@ -1410,34 +1426,55 @@ void client_handle_freed_client (struct tcp_client *client)
     // set client closed
     client->client_closed = 1;
     
-    // if we have data to be sent to SOCKS and can send it, keep sending
+    // Drain the client-to-SOCKS stream before freeing the SOCKS connection.
     if (TcpRingBuffer_GetUsed(&client->buf_ring) > 0 && !client->socks_closed) {
         client_log(client, BLOG_INFO, "waiting untill buffered data is sent to SOCKS");
+    } else if (!client->socks_closed) {
+        client_free_socks(client);
+    } else if (TcpRingBuffer_GetUsed(&client->socks_recv_ring) > 0) {
+        client_log(client, BLOG_INFO, "waiting until TCP acknowledges SOCKS payload");
     } else {
-        if (!client->socks_closed) {
-            client_free_socks(client);
-        } else {
-            client_dealloc(client);
-        }
+        client_dealloc(client);
     }
 }
 
 void client_free_client (struct tcp_client *client)
 {
     ASSERT(!client->client_closed)
-    
-    // remove callbacks
-    tcp_err(client->pcb, NULL);
+    ASSERT(client->pcb)
+
+    // Queue all remaining zero-copy data before closing the TCP control block.
+    if (TcpRingBuffer_GetReadable(&client->socks_recv_ring) > 0) {
+        if (client_socks_recv_send_out(client) < 0) {
+            return;
+        }
+        if (TcpRingBuffer_GetReadable(&client->socks_recv_ring) > 0) {
+            if (TcpRingBuffer_GetQueued(&client->socks_recv_ring) == 0) {
+                client_log(client, BLOG_ERROR, "cannot drain SOCKS-to-TCP ring before close");
+                client_abort_client(client);
+                return;
+            }
+            client->tcp_close_pending = 1;
+            return;
+        }
+    }
+
+    client->tcp_close_pending = 0;
     tcp_recv(client->pcb, NULL);
-    tcp_sent(client->pcb, NULL);
-    
-    // free pcb
+
+    // Keep ACK and error callbacks while lwIP still references ring-buffer memory.
+    if (TcpRingBuffer_GetQueued(&client->socks_recv_ring) == 0) {
+        tcp_err(client->pcb, NULL);
+        tcp_sent(client->pcb, NULL);
+        tcp_arg(client->pcb, NULL);
+    }
+
     err_t err = tcp_close(client->pcb);
     if (err != ERR_OK) {
         client_log(client, BLOG_ERROR, "tcp_close failed (%d)", err);
         client_abort_pcb(client);
     }
-    
+
     client_handle_freed_client(client);
 }
 
@@ -1460,9 +1497,15 @@ void client_abort_pcb (struct tcp_client *client)
 {
     ASSERT(!client->aborted)
     
-    // abort the PCB
+    // Abort releases every no-copy payload still referenced by lwIP.
+    tcp_arg(client->pcb, NULL);
+    tcp_recv(client->pcb, NULL);
+    tcp_sent(client->pcb, NULL);
+    tcp_err(client->pcb, NULL);
     tcp_abort(client->pcb);
-    
+    client->pcb = NULL;
+    TcpRingBuffer_Reset(&client->socks_recv_ring);
+
     // mark aborted
     client->aborted = 1;
     
@@ -1475,30 +1518,26 @@ void client_abort_pcb (struct tcp_client *client)
 void client_free_socks (struct tcp_client *client)
 {
     ASSERT(!client->socks_closed)
-    
-    // stop sending to SOCKS
-    if (client->socks_up) {
-        // stop receiving from client
-        if (!client->client_closed) {
-            tcp_recv(client->pcb, NULL);
-        }
+
+    if (client->socks_up && !client->client_closed && client->pcb) {
+        tcp_recv(client->pcb, NULL);
     }
-    
-    // free SOCKS
+
+    // Freeing the SOCKS connection cancels any outstanding receive operation.
     BSocksClient_Free(&client->socks_client);
-    
-    // set SOCKS closed
+    client->socks_recv_pending = 0;
+    client->socks_recv_len = 0;
+    client->socks_send_pending = 0;
+    client->socks_send_len = 0;
     client->socks_closed = 1;
-    
-    // if we have data to be sent to the client and we can send it, keep sending
-    if (client->socks_up && (client->socks_recv_buf_used >= 0 || client->socks_recv_tcp_pending > 0) && !client->client_closed) {
-        client_log(client, BLOG_INFO, "waiting until buffered data is sent to client");
+
+    // Retain the ring storage until every no-copy TCP payload is acknowledged.
+    if (TcpRingBuffer_GetUsed(&client->socks_recv_ring) > 0) {
+        client_log(client, BLOG_INFO, "waiting until buffered data is acknowledged by client");
+    } else if (!client->client_closed) {
+        client_free_client(client);
     } else {
-        if (!client->client_closed) {
-            client_free_client(client);
-        } else {
-            client_dealloc(client);
-        }
+        client_dealloc(client);
     }
 }
 
@@ -1527,6 +1566,11 @@ void client_murder (struct tcp_client *client)
         client->socks_closed = 1;
     }
     
+    // The TCP PCB was aborted, so no-copy payload references are gone.
+    TcpRingBuffer_Reset(&client->socks_recv_ring);
+    client->socks_recv_pending = 0;
+    client->socks_recv_len = 0;
+
     // dealloc entry
     client_dealloc(client);
 }
@@ -1535,7 +1579,9 @@ void client_dealloc (struct tcp_client *client)
 {
     ASSERT(client->client_closed)
     ASSERT(client->socks_closed)
-    
+    ASSERT(TcpRingBuffer_GetUsed(&client->socks_recv_ring) == 0)
+    ASSERT(!client->socks_recv_pending)
+
     // decrement counter
     ASSERT(num_clients > 0)
     num_clients--;
@@ -1556,12 +1602,21 @@ void client_dealloc (struct tcp_client *client)
 void client_err_func (void *arg, err_t err)
 {
     struct tcp_client *client = (struct tcp_client *)arg;
-    ASSERT(!client->client_closed)
-    
+
     client_log(client, BLOG_INFO, "client error (%d)", (int)err);
-    
-    // the pcb was taken care of by the caller
-    client_handle_freed_client(client);
+
+    // lwIP has already freed the PCB, so its no-copy payload references are gone.
+    client->pcb = NULL;
+    TcpRingBuffer_Reset(&client->socks_recv_ring);
+    client->tcp_close_pending = 0;
+
+    if (!client->client_closed) {
+        client_handle_freed_client(client);
+    } else if (client->socks_closed) {
+        client_dealloc(client);
+    } else if (TcpRingBuffer_GetUsed(&client->buf_ring) == 0) {
+        client_free_socks(client);
+    }
 }
 
 err_t client_recv_func (void *arg, struct tcp_pcb *tpcb, struct pbuf *p, err_t err)
@@ -1663,8 +1718,6 @@ void client_socks_handler (struct tcp_client *client, int event)
             // init receiving
             client->socks_recv_if = BSocksClient_GetRecvInterface(&client->socks_client);
             StreamRecvInterface_Receiver_Init(client->socks_recv_if, (StreamRecvInterface_handler_done)client_socks_recv_handler_done, client);
-            client->socks_recv_buf_used = -1;
-            client->socks_recv_tcp_pending = 0;
             if (!client->client_closed) {
                 tcp_sent(client->pcb, client_sent_func);
             }
@@ -1749,153 +1802,203 @@ void client_socks_send_handler_done (struct tcp_client *client, int data_len)
 
 void client_socks_recv_initiate (struct tcp_client *client)
 {
+    TcpRingBufferRegion regions[2];
+    int region_count;
+
     ASSERT(!client->client_closed)
+    ASSERT(!client->tcp_close_pending)
     ASSERT(!client->socks_closed)
     ASSERT(client->socks_up)
-    ASSERT(client->socks_recv_buf_used == -1)
-    
-    StreamRecvInterface_Receiver_Recv(client->socks_recv_if, client->socks_recv_buf, sizeof(client->socks_recv_buf));
+    ASSERT(!client->socks_recv_pending)
+
+    region_count = TcpRingBuffer_GetWriteRegions(&client->socks_recv_ring, regions);
+    if (region_count <= 0 || regions[0].len == 0) {
+        return;
+    }
+
+    ASSERT(regions[0].len <= INT_MAX)
+    client->socks_recv_pending = 1;
+    client->socks_recv_len = (int)regions[0].len;
+
+    // Receive directly into a writable ring region; no intermediate staging copy.
+    StreamRecvInterface_Receiver_Recv(
+        client->socks_recv_if,
+        regions[0].data,
+        client->socks_recv_len
+    );
 }
 
 void client_socks_recv_handler_done (struct tcp_client *client, int data_len)
 {
     ASSERT(data_len > 0)
-    ASSERT(data_len <= sizeof(client->socks_recv_buf))
+    ASSERT(client->socks_recv_pending)
+    ASSERT(data_len <= client->socks_recv_len)
     ASSERT(!client->socks_closed)
     ASSERT(client->socks_up)
-    ASSERT(client->socks_recv_buf_used == -1)
-    
-    // if client was closed, stop receiving
+
+    client->socks_recv_pending = 0;
+    client->socks_recv_len = 0;
+
+    // A closed client no longer accepts additional SOCKS payload.
     if (client->client_closed) {
         return;
     }
-    
-    // set amount of data in buffer
-    client->socks_recv_buf_used = data_len;
-    client->socks_recv_buf_sent = 0;
-    client->socks_recv_waiting = 0;
-    
-    // send to client
+
+    if (TcpRingBuffer_WriteCommit(&client->socks_recv_ring, (size_t)data_len) < 0) {
+        client_log(client, BLOG_ERROR, "SOCKS-to-TCP ring write commit failed");
+        client_abort_client(client);
+        return;
+    }
+
     if (client_socks_recv_send_out(client) < 0) {
         return;
     }
-    
-    // continue receiving if needed
-    if (client->socks_recv_buf_used == -1) {
+
+    if (client->tcp_close_pending) {
+        if (TcpRingBuffer_GetReadable(&client->socks_recv_ring) == 0) {
+            client_free_client(client);
+        }
+    } else if (!client->socks_closed &&
+               TcpRingBuffer_GetWritable(&client->socks_recv_ring) > 0) {
         client_socks_recv_initiate(client);
     }
 }
 
 int client_socks_recv_send_out (struct tcp_client *client)
 {
+    int queued_any = 0;
+
     ASSERT(!client->client_closed)
+    ASSERT(client->pcb)
     ASSERT(client->socks_up)
-    ASSERT(client->socks_recv_buf_used > 0)
-    ASSERT(client->socks_recv_buf_sent < client->socks_recv_buf_used)
-    ASSERT(!client->socks_recv_waiting)
-    
-    // return value -1 means tcp_abort() was done,
-    // 0 means it wasn't and the client (pcb) is still up
-    
-    do {
-        int to_write = bmin_int(client->socks_recv_buf_used - client->socks_recv_buf_sent, tcp_sndbuf(client->pcb));
+
+    // Queue writable TCP payload references and retain each region until its ACK.
+    while (TcpRingBuffer_GetReadable(&client->socks_recv_ring) > 0) {
+        TcpRingBufferRegion regions[2];
+        int region_count = TcpRingBuffer_GetReadRegions(&client->socks_recv_ring, regions);
+        size_t to_write;
+        err_t err;
+
+        if (region_count <= 0 || regions[0].len == 0) {
+            client_log(client, BLOG_ERROR, "SOCKS-to-TCP ring has no readable region");
+            client_abort_client(client);
+            return -1;
+        }
+
+        to_write = regions[0].len;
+        if (to_write > (size_t)tcp_sndbuf(client->pcb)) {
+            to_write = tcp_sndbuf(client->pcb);
+        }
+        if (to_write > UINT16_MAX) {
+            to_write = UINT16_MAX;
+        }
         if (to_write == 0) {
             break;
         }
-        
-        err_t err = tcp_write(client->pcb, client->socks_recv_buf + client->socks_recv_buf_sent, to_write, TCP_WRITE_FLAG_COPY);
+
+        err = tcp_write(client->pcb, regions[0].data, (u16_t)to_write, 0);
+        if (err == ERR_MEM) {
+            break;
+        }
         if (err != ERR_OK) {
-            if (err == ERR_MEM) {
-                break;
-            }
-            
             client_log(client, BLOG_INFO, "tcp_write failed (%d)", (int)err);
-            
             client_abort_client(client);
             return -1;
         }
-        
-        client->socks_recv_buf_sent += to_write;
-        client->socks_recv_tcp_pending += to_write;
-    } while (client->socks_recv_buf_sent < client->socks_recv_buf_used);
-    
-    // start sending now
-    err_t err = tcp_output(client->pcb);
-    if (err != ERR_OK) {
-        client_log(client, BLOG_INFO, "tcp_output failed (%d)", (int)err);
-        
+
+        if (TcpRingBuffer_ReadCommit(&client->socks_recv_ring, to_write) < 0) {
+            client_log(client, BLOG_ERROR, "SOCKS-to-TCP ring read commit failed");
+            client_abort_client(client);
+            return -1;
+        }
+
+        queued_any = 1;
+    }
+
+    if (queued_any) {
+        err_t err = tcp_output(client->pcb);
+        if (err != ERR_OK) {
+            client_log(client, BLOG_INFO, "tcp_output failed (%d)", (int)err);
+            client_abort_client(client);
+            return -1;
+        }
+    }
+
+    // Without queued bytes there will be no ACK callback to resume a blocked writer.
+    if (TcpRingBuffer_GetReadable(&client->socks_recv_ring) > 0 &&
+        TcpRingBuffer_GetQueued(&client->socks_recv_ring) == 0) {
+        client_log(client, BLOG_ERROR, "cannot queue SOCKS data with no TCP bytes in flight");
         client_abort_client(client);
         return -1;
     }
-    
-    // more data to queue?
-    if (client->socks_recv_buf_sent < client->socks_recv_buf_used) {
-        if (client->socks_recv_tcp_pending == 0) {
-            client_log(client, BLOG_ERROR, "can't queue data, but all data was confirmed !?!");
-            
-            client_abort_client(client);
-            return -1;
-        }
-        
-        // set waiting, continue in client_sent_func
-        client->socks_recv_waiting = 1;
-        return 0;
-    }
-    
-    // everything was queued
-    client->socks_recv_buf_used = -1;
-    
+
     return 0;
 }
 
 err_t client_sent_func (void *arg, struct tcp_pcb *tpcb, u16_t len)
 {
     struct tcp_client *client = (struct tcp_client *)arg;
-    
-    ASSERT(!client->client_closed)
+
     ASSERT(client->socks_up)
     ASSERT(len > 0)
-    ASSERT(len <= client->socks_recv_tcp_pending)
-    
+    ASSERT((size_t)len <= TcpRingBuffer_GetQueued(&client->socks_recv_ring))
+
     DEAD_ENTER(client->dead_aborted)
-    
-    // decrement pending
-    client->socks_recv_tcp_pending -= len;
-    
-    // continue queuing
-    if (client->socks_recv_buf_used > 0) {
-        ASSERT(client->socks_recv_waiting)
-        ASSERT(client->socks_recv_buf_sent < client->socks_recv_buf_used)
-        
-        // set not waiting
-        client->socks_recv_waiting = 0;
-        
-        // possibly send more data
-        if (client_socks_recv_send_out(client) < 0) {
-            goto out;
+
+    // The ACK callback is the only point where no-copy storage becomes reusable.
+    if (TcpRingBuffer_ReadRelease(&client->socks_recv_ring, (size_t)len) < 0) {
+        client_log(client, BLOG_ERROR, "SOCKS-to-TCP ring ACK release failed");
+        if (!client->client_closed) {
+            client_abort_client(client);
         }
-        
-        // we just queued some data, so it can't have been confirmed yet
-        ASSERT(client->socks_recv_tcp_pending > 0)
-        
-        // continue receiving if needed
-        if (client->socks_recv_buf_used == -1 && !client->socks_closed) {
-            SYNC_DECL
-            SYNC_FROMHERE
-            client_socks_recv_initiate(client);
-            SYNC_COMMIT
+        goto out;
+    }
+
+    if (client->client_closed) {
+        if (TcpRingBuffer_GetUsed(&client->socks_recv_ring) == 0) {
+            tcp_sent(tpcb, NULL);
+            tcp_err(tpcb, NULL);
+            tcp_arg(tpcb, NULL);
+            client->pcb = NULL;
+
+            if (client->socks_closed) {
+                client_dealloc(client);
+            }
         }
-    } else {    
-        // have we sent everything after SOCKS was closed?
-        if (client->socks_closed && client->socks_recv_tcp_pending == 0) {
+        goto out;
+    }
+
+    if (TcpRingBuffer_GetReadable(&client->socks_recv_ring) > 0 &&
+        client_socks_recv_send_out(client) < 0) {
+        goto out;
+    }
+
+    if (client->tcp_close_pending) {
+        if (TcpRingBuffer_GetReadable(&client->socks_recv_ring) == 0) {
+            client_free_client(client);
+        }
+        goto out;
+    }
+
+    if (client->socks_closed) {
+        if (TcpRingBuffer_GetUsed(&client->socks_recv_ring) == 0) {
             client_log(client, BLOG_INFO, "removing after SOCKS went down");
             client_free_client(client);
         }
+        goto out;
     }
-    
+
+    if (!client->socks_recv_pending &&
+        TcpRingBuffer_GetWritable(&client->socks_recv_ring) > 0) {
+        SYNC_DECL
+        SYNC_FROMHERE
+        client_socks_recv_initiate(client);
+        SYNC_COMMIT
+    }
+
 out:
     DEAD_LEAVE2(client->dead_aborted)
-    
+
     // Return ERR_ABRT if and only if tcp_abort was called from this callback.
     return (DEAD_KILLED > 0) ? ERR_ABRT : ERR_OK;
 }
