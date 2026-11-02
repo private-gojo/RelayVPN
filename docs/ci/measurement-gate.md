@@ -9,7 +9,7 @@ Phase 2e measures the existing BadVPN TCP ring-buffer/window variants against th
 Primary run: [Run #24](https://github.com/private-gojo/RelayVPN/actions/runs/41502191114)  
 Artifact: `relayvpn-phase2e-recovered`
 
-- 768 throughput rows: 96 combinations × 8 measured rounds; all recorded errors were zero.
+- 768 throughput rows: 96 arm/profile combinations × 8 total rounds (1 warm-up + 7 measured); 672 rows are measured rounds. All recorded transfer errors were zero.
 - 9,600 TTFB samples; no recorded errors.
 - 55 memory measurements; all requested connection counts were reached, including 1,100 idle clients on each BadVPN arm.
 - Ten 50 MiB calibration runs; median 1,954.099 Mbps and coefficient of variation 10.0455%. The conservative 2× noise floor is 20.10%.
