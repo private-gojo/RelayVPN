@@ -6,6 +6,7 @@ on:
       - phase2e/measurement-gate
     paths-ignore:
       - .github/workflows/phase2e-measurement-gate.yml
+      - .github/workflows/phase2e-report-validation.yml
       - tests/bench/measure.py
       - tests/bench/summarize.py
       - tests/bench/test_summarize.py
