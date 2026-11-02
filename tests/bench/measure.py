@@ -818,7 +818,7 @@ class Lab:
         ]
         rows_path = self.artifacts / "results.csv"
         ttfb_path = self.artifacts / "ttfb.csv"
-        with rows_path.open("w", newline="", encoding="utf-8") as result_file, \\
+        with rows_path.open("w", newline="", encoding="utf-8") as result_file, \
              ttfb_path.open("w", newline="", encoding="utf-8") as ttfb_file:
             writer = csv.DictWriter(result_file, fieldnames=result_fields)
             ttfb_writer = csv.DictWriter(ttfb_file, fieldnames=ttfb_fields)
