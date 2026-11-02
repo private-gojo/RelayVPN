@@ -143,5 +143,18 @@ class SummaryReportTests(unittest.TestCase):
             self.assertIn("expected exactly one memory record", result.stderr)
 
 
+    def test_incomplete_memory_connections_fail_closed(self):
+        with tempfile.TemporaryDirectory() as temp:
+            artifacts, manifest = make_artifacts(Path(temp))
+            rows = list(csv.DictReader((artifacts / "memory.csv").open(
+                newline="", encoding="utf-8")))
+            rows[0]["connected"] = 15
+            rows[0]["client_errors"] = 1
+            write_csv(artifacts / "memory.csv", list(rows[0]), rows)
+            result = self.run_summarizer(artifacts, manifest)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("incomplete client establishment", result.stderr)
+
+
 if __name__ == "__main__":
     unittest.main()
