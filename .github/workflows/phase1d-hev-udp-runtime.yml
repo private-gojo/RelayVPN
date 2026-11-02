@@ -1,0 +1,176 @@
+name: Phase 1d - Hev UDP runtime
+
+on:
+  push:
+    branches:
+      - phase1d/hev-udp-runtime
+  pull_request:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  hev-udp-runtime:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout RelayVPN
+        uses: actions/checkout@v4
+
+      - name: Install runtime tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential cmake iproute2 python3
+
+      - name: Verify TUN and network namespace support
+        run: |
+          set -euo pipefail
+          sudo modprobe tun || true
+          test -c /dev/net/tun
+          sudo ip netns add rvchk
+          sudo ip netns del rvchk
+          sudo ip link add rvchk type dummy
+          sudo ip link del rvchk
+
+      - name: Build standalone Hev executable
+        run: |
+          set -euo pipefail
+          cmake -S . -B "$RUNNER_TEMP/relayvpn-phase1d-build" \
+            -G "Unix Makefiles" \
+            -DBUILD_HEV=ON \
+            -DBUILD_TUN2SOCKS=OFF \
+            -DBUILD_CLIENT=OFF \
+            -DBUILD_SERVER=OFF \
+            -DBUILD_FLOODER=OFF \
+            -DBUILD_EXAMPLES=OFF \
+            -DBUILD_TESTS=OFF \
+            -DBUILD_NCD=OFF \
+            -DBUILD_UDPGW=OFF \
+            -DBUILD_DOSTEST=OFF
+          cmake --build "$RUNNER_TEMP/relayvpn-phase1d-build" --target hev-bin --parallel 2
+          test -x third_party/hev-socks5-tunnel/bin/hev-socks5-tunnel
+
+      - name: Run TUN to Hev to SOCKS5 UDP relay integration test
+        shell: bash
+        run: |
+          set -euo pipefail
+          ROOT="$RUNNER_TEMP/phase1d"
+          HEV_BIN="$GITHUB_WORKSPACE/third_party/hev-socks5-tunnel/bin/hev-socks5-tunnel"
+          ARTIFACT_DIR="$RUNNER_TEMP/phase1d-artifacts"
+          mkdir -p "$ROOT/logs" "$ARTIFACT_DIR"
+
+          cleanup() {
+            set +e
+            if [[ -n "${HEV_PID:-}" ]] && sudo kill -0 "$HEV_PID" 2>/dev/null; then
+              sudo kill -TERM "$HEV_PID" 2>/dev/null
+              wait "$HEV_PID" 2>/dev/null
+            fi
+            if [[ -n "${PROXY_PID:-}" ]] && kill -0 "$PROXY_PID" 2>/dev/null; then
+              kill "$PROXY_PID" 2>/dev/null
+            fi
+            sudo ip -n cli addr > "$ARTIFACT_DIR/cli-ip-addr.txt" 2>&1
+            sudo ip -n cli route > "$ARTIFACT_DIR/cli-ip-route.txt" 2>&1
+            cp -a "$ROOT/logs/." "$ARTIFACT_DIR/" 2>/dev/null
+            cp "$ROOT/hev.yml" "$ARTIFACT_DIR/" 2>/dev/null
+            sudo ip link del veth-root 2>/dev/null
+            sudo ip addr del 198.51.100.10/32 dev lo 2>/dev/null
+            sudo ip netns del cli 2>/dev/null
+          }
+          trap cleanup EXIT
+
+          sudo ip netns add cli
+          sudo ip link add veth-root type veth peer name veth-cli
+          sudo ip link set veth-cli netns cli
+          sudo ip addr add 10.200.0.1/30 dev veth-root
+          sudo ip link set veth-root up
+          sudo ip -n cli addr add 10.200.0.2/30 dev veth-cli
+          sudo ip -n cli link set lo up
+          sudo ip -n cli link set veth-cli up
+          sudo ip addr add 198.51.100.10/32 dev lo
+
+          python3 tests/socks5-udp-test-proxy.py > "$ROOT/logs/socks5-udp-proxy.log" 2>&1 &
+          PROXY_PID=$!
+          for i in $(seq 1 30); do
+            if timeout 1 bash -c '</dev/tcp/10.200.0.1/1080' 2>/dev/null; then break; fi
+            sleep 1
+          done
+          kill -0 "$PROXY_PID"
+          ss -lnt | grep '10.200.0.1:1080'
+          ss -lnu | grep '10.200.0.1:1081'
+
+          cat > "$ROOT/hev.yml" <<EOF
+          tunnel:
+            name: tun0
+            mtu: 1500
+            ipv4: 198.18.0.1
+            icmp: 'off'
+          socks5:
+            address: 10.200.0.1
+            port: 1080
+            udp: 'udp'
+          misc:
+            log-file: stderr
+            log-level: debug
+            connect-timeout: 10000
+            udp-read-write-timeout: 15000
+          EOF
+
+          sudo bash -c 'exec ip netns exec cli "$1" "$2"' _ "$HEV_BIN" "$ROOT/hev.yml" > "$ROOT/logs/hev.log" 2>&1 &
+          HEV_PID=$!
+          for i in $(seq 1 30); do
+            if sudo ip -n cli link show tun0 >/dev/null 2>&1; then break; fi
+            if ! sudo kill -0 "$HEV_PID" 2>/dev/null; then cat "$ROOT/logs/hev.log"; exit 1; fi
+            sleep 1
+          done
+          sudo ip -n cli link show tun0
+          sudo ip -n cli link set tun0 up
+          sudo ip -n cli route add default dev tun0
+
+          echo '--- UDP runtime test ---'
+          sudo ip netns exec cli python3 tests/hev-udp-client.py
+
+          echo '--- SIGTERM lifecycle test ---'
+          sudo kill -TERM "$HEV_PID"
+          set +e
+          wait "$HEV_PID"
+          HEV_STATUS=$?
+          set -e
+          echo "hev_exit_status=$HEV_STATUS"
+          test "$HEV_STATUS" -eq 0
+          for i in $(seq 1 20); do
+            if ! sudo ip -n cli link show tun0 >/dev/null 2>&1; then break; fi
+            sleep 1
+          done
+          if sudo ip -n cli link show tun0 >/dev/null 2>&1; then
+            echo "tun0 still exists after Hev exit" >&2
+            exit 1
+          fi
+          if pgrep -x hev-socks5-tunnel >/dev/null; then
+            echo "Orphan Hev process remains" >&2
+            pgrep -a -x hev-socks5-tunnel
+            exit 1
+          fi
+          echo 'PASS: UDP round trip, SIGTERM exit 0, TUN cleanup, no orphan process'
+
+          echo '--- Hev log ---'
+          tail -n 160 "$ROOT/logs/hev.log"
+          echo '--- SOCKS5 UDP relay log ---'
+          cat "$ROOT/logs/socks5-udp-proxy.log"
+
+          {
+            echo "## Phase 1d Hev UDP runtime"
+            echo "- SOCKS5 UDP ASSOCIATE round trip: PASS"
+            echo "- SIGTERM and TUN cleanup: PASS"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload UDP runtime logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: relayvpn-phase1d-hev-udp-runtime-logs
+          path: ${{ runner.temp }}/phase1d-artifacts
+          if-no-files-found: warn
