@@ -210,7 +210,6 @@ class Lab:
             "PermitOpen any\n"
             "UsePAM no\n"
             "StrictModes yes\n"
-            "MaxSessions 4096\n"
             "LogLevel ERROR\n" % (SSH_PORT, HOST_IP, self.work / "sshd.pid", USER),
             encoding="ascii",
         )
