@@ -1,0 +1,228 @@
+name: Phase 1e - BadVPN TCP and UDPGW runtime
+
+on:
+  push:
+    branches:
+      - phase1e-badvpn-udpgw-runtime
+  pull_request:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  badvpn-runtime:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout RelayVPN
+        uses: actions/checkout@v4
+
+      - name: Install runtime tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential cmake iproute2 curl openssh-client openssh-server python3
+
+      - name: Verify TUN and network namespace support
+        run: |
+          set -euo pipefail
+          sudo modprobe tun || true
+          test -c /dev/net/tun
+          sudo ip netns add rvchk
+          sudo ip netns del rvchk
+          sudo ip link add rvchk type dummy
+          sudo ip link del rvchk
+
+      - name: Build BadVPN tun2socks and UDPGW
+        run: |
+          set -euo pipefail
+          cmake -S . -B "$RUNNER_TEMP/relayvpn-phase1e-build" \
+            -G "Unix Makefiles" \
+            -DBUILD_NOTHING_BY_DEFAULT=ON \
+            -DBUILD_TUN2SOCKS=ON \
+            -DBUILD_UDPGW=ON
+          cmake --build "$RUNNER_TEMP/relayvpn-phase1e-build" --parallel 2
+          test -x "$RUNNER_TEMP/relayvpn-phase1e-build/tun2socks/badvpn-tun2socks"
+          test -x "$RUNNER_TEMP/relayvpn-phase1e-build/udpgw/badvpn-udpgw"
+
+      - name: Run TUN to BadVPN to SSH SOCKS5 and UDPGW integration test
+        shell: bash
+        run: |
+          set -euo pipefail
+          ROOT="$RUNNER_TEMP/phase1e"
+          TUN_BIN="$RUNNER_TEMP/relayvpn-phase1e-build/tun2socks/badvpn-tun2socks"
+          UDPGW_BIN="$RUNNER_TEMP/relayvpn-phase1e-build/udpgw/badvpn-udpgw"
+          ARTIFACT_DIR="$RUNNER_TEMP/phase1e-artifacts"
+          mkdir -p "$ROOT/www" "$ROOT/logs" "$ARTIFACT_DIR"
+          printf 'RelayVPN BadVPN TCP runtime OK\n' > "$ROOT/www/small.txt"
+
+          cleanup() {
+            set +e
+            for pid in "${TUN_PID:-}" "${UDPGW_PID:-}" "${SSH_PID:-}" "${HTTP_PID:-}" "${ECHO_PID:-}"; do
+              if [[ -n "$pid" ]] && kill -0 "$pid" 2>/dev/null; then
+                sudo kill -TERM "$pid" 2>/dev/null || kill -TERM "$pid" 2>/dev/null
+                wait "$pid" 2>/dev/null
+              fi
+            done
+            if [[ -s "$ROOT/sshd.pid" ]]; then sudo kill "$(cat "$ROOT/sshd.pid")" 2>/dev/null; fi
+            sudo ip -n cli addr > "$ARTIFACT_DIR/cli-ip-addr.txt" 2>&1
+            sudo ip -n cli route > "$ARTIFACT_DIR/cli-ip-route.txt" 2>&1
+            cp -a "$ROOT/logs/." "$ARTIFACT_DIR/" 2>/dev/null
+            cp "$ROOT/tun2socks.log" "$ARTIFACT_DIR/" 2>/dev/null
+            sudo ip link del veth-root 2>/dev/null
+            sudo ip addr del 198.51.100.10/32 dev lo 2>/dev/null
+            sudo ip netns del cli 2>/dev/null
+          }
+          trap cleanup EXIT
+
+          sudo ip netns add cli
+          sudo ip link add veth-root type veth peer name veth-cli
+          sudo ip link set veth-cli netns cli
+          sudo ip addr add 10.200.0.1/30 dev veth-root
+          sudo ip link set veth-root up
+          sudo ip -n cli addr add 10.200.0.2/30 dev veth-cli
+          sudo ip -n cli link set lo up
+          sudo ip -n cli link set veth-cli up
+          sudo ip addr add 198.51.100.10/32 dev lo
+
+          sudo useradd --create-home --shell /bin/bash relayvpn-test
+          sudo usermod --password '*' relayvpn-test
+          sudo install -d -m 700 -o relayvpn-test -g relayvpn-test /home/relayvpn-test/.ssh
+          ssh-keygen -q -t ed25519 -N '' -f "$ROOT/id_ed25519"
+          sudo install -m 600 -o relayvpn-test -g relayvpn-test "$ROOT/id_ed25519.pub" /home/relayvpn-test/.ssh/authorized_keys
+          sudo ssh-keygen -A
+          cat > "$ROOT/sshd_config" <<EOF
+          Port 2222
+          ListenAddress 127.0.0.1
+          HostKey /etc/ssh/ssh_host_ed25519_key
+          PidFile $ROOT/sshd.pid
+          AuthorizedKeysFile .ssh/authorized_keys
+          PasswordAuthentication no
+          KbdInteractiveAuthentication no
+          PubkeyAuthentication yes
+          PermitRootLogin no
+          AllowUsers relayvpn-test
+          AllowTcpForwarding yes
+          PermitOpen any
+          UsePAM no
+          StrictModes yes
+          LogLevel VERBOSE
+          EOF
+          sudo mkdir -p /run/sshd
+          sudo /usr/sbin/sshd -f "$ROOT/sshd_config" -E "$ROOT/logs/sshd.log"
+          for i in $(seq 1 30); do
+            if ssh-keyscan -p 2222 127.0.0.1 > "$ROOT/known_hosts" 2>/dev/null && [[ -s "$ROOT/known_hosts" ]]; then break; fi
+            sleep 1
+          done
+          test -s "$ROOT/known_hosts"
+
+          ssh -N -D 10.200.0.1:1080 -p 2222 \
+            -i "$ROOT/id_ed25519" \
+            -o UserKnownHostsFile="$ROOT/known_hosts" \
+            -o StrictHostKeyChecking=yes \
+            -o ExitOnForwardFailure=yes \
+            -o ServerAliveInterval=15 \
+            -o ServerAliveCountMax=3 \
+            -v relayvpn-test@127.0.0.1 \
+            > "$ROOT/logs/ssh-client.log" 2>&1 &
+          SSH_PID=$!
+          for i in $(seq 1 30); do
+            if timeout 1 bash -c '</dev/tcp/10.200.0.1/1080' 2>/dev/null; then break; fi
+            sleep 1
+          done
+          kill -0 "$SSH_PID"
+          ss -lnt | grep '10.200.0.1:1080'
+
+          "$UDPGW_BIN" --listen-addr 10.200.0.1:7300 --loglevel debug > "$ROOT/logs/udpgw.log" 2>&1 &
+          UDPGW_PID=$!
+          for i in $(seq 1 30); do
+            if timeout 1 bash -c '</dev/tcp/10.200.0.1/7300' 2>/dev/null; then break; fi
+            sleep 1
+          done
+          kill -0 "$UDPGW_PID"
+          ss -lnt | grep '10.200.0.1:7300'
+
+          WEB_ROOT="$ROOT/www" python3 -c 'import http.server,os; os.chdir(os.environ["WEB_ROOT"]); http.server.ThreadingHTTPServer(("198.51.100.10",8080),http.server.SimpleHTTPRequestHandler).serve_forever()' > "$ROOT/logs/http.log" 2>&1 &
+          HTTP_PID=$!
+          python3 tests/badvpn-udpgw-echo.py > "$ROOT/logs/udp-echo.log" 2>&1 &
+          ECHO_PID=$!
+          sleep 1
+          kill -0 "$HTTP_PID"
+          kill -0 "$ECHO_PID"
+
+          "$TUN_BIN" \
+            --tundev tun0 \
+            --netif-ipaddr 198.18.0.1 \
+            --netif-netmask 255.255.255.0 \
+            --socks-server-addr 10.200.0.1:1080 \
+            --udpgw-remote-server-addr 10.200.0.1:7300 \
+            --loglevel debug > "$ROOT/tun2socks.log" 2>&1 &
+          TUN_PID=$!
+          for i in $(seq 1 30); do
+            if sudo ip -n cli link show tun0 >/dev/null 2>&1; then break; fi
+            if ! sudo kill -0 "$TUN_PID" 2>/dev/null; then cat "$ROOT/tun2socks.log"; exit 1; fi
+            sleep 1
+          done
+          sudo ip -n cli link show tun0
+          sudo ip -n cli link set tun0 up
+          sudo ip -n cli route add default dev tun0
+
+          echo '--- TCP through BadVPN tun2socks and SSH SOCKS5 ---'
+          sudo ip netns exec cli curl --noproxy '*' --fail --silent --show-error \
+            http://198.51.100.10:8080/small.txt -o "$ROOT/tcp-result.txt"
+          cmp "$ROOT/www/small.txt" "$ROOT/tcp-result.txt"
+          echo 'PASS: BadVPN TCP through SSH SOCKS5'
+
+          echo '--- UDP through BadVPN tun2socks and UDPGW ---'
+          sudo ip netns exec cli python3 tests/badvpn-udpgw-client.py
+
+          echo '--- Shutdown and resource cleanup ---'
+          sudo kill -TERM "$TUN_PID"
+          sudo kill -TERM "$UDPGW_PID"
+          set +e
+          wait "$TUN_PID"
+          TUN_STATUS=$?
+          wait "$UDPGW_PID"
+          UDPGW_STATUS=$?
+          set -e
+          echo "tun2socks_exit_status=$TUN_STATUS"
+          echo "udpgw_exit_status=$UDPGW_STATUS"
+          for i in $(seq 1 20); do
+            if ! sudo ip -n cli link show tun0 >/dev/null 2>&1; then break; fi
+            sleep 1
+          done
+          if sudo ip -n cli link show tun0 >/dev/null 2>&1; then
+            echo "tun0 still exists after BadVPN exit" >&2
+            exit 1
+          fi
+          if pgrep -x badvpn-tun2socks >/dev/null || pgrep -x badvpn-udpgw >/dev/null; then
+            echo "Orphan BadVPN process remains" >&2
+            pgrep -a -f 'badvpn-(tun2socks|udpgw)' || true
+            exit 1
+          fi
+          echo 'PASS: TCP and UDPGW runtime, TUN cleanup, no orphan BadVPN processes'
+
+          echo '--- BadVPN tun2socks log ---'
+          tail -n 160 "$ROOT/tun2socks.log"
+          echo '--- UDPGW log ---'
+          tail -n 100 "$ROOT/logs/udpgw.log"
+          echo '--- SSH dynamic-forward evidence ---'
+          grep -E 'Authenticated to|Local forwarding listening|dynamic request|channel [0-9]+: new' "$ROOT/logs/ssh-client.log" | tail -n 30 || true
+
+          {
+            echo "## Phase 1e BadVPN runtime"
+            echo "- TCP through SSH SOCKS5: PASS"
+            echo "- UDP through BadVPN UDPGW: PASS"
+            echo "- TUN and process cleanup: PASS"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload BadVPN runtime logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: relayvpn-phase1e-badvpn-runtime-logs
+          path: ${{ runner.temp }}/phase1e-artifacts
+          if-no-files-found: warn
