@@ -19,8 +19,8 @@ async def handle(reader, writer, root):
         if target == "/small.txt":
             body = b"RelayVPN phase2e benchmark probe\n"
             status = b"200 OK"
-        elif target == "/large.bin":
-            path = root / "large.bin"
+        elif target in ("/large.bin", "/large10.bin"):
+            path = root / target.lstrip("/")
             body = None
             status = b"200 OK"
         else:
