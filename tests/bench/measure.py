@@ -211,7 +211,7 @@ class Lab:
             "PermitOpen any\n"
             "UsePAM no\n"
             "StrictModes yes\n"
-            "LogLevel DEBUG1\n" % (SSH_PORT, HOST_IP, self.work / "sshd.pid", USER),
+            "LogLevel DEBUG1\n" % (SSH_PORT, self.work / "sshd.pid", USER),
             encoding="ascii",
         )
         Path("/run/sshd").mkdir(exist_ok=True)
@@ -223,7 +223,7 @@ class Lab:
 
         known_hosts = self.work / "known_hosts"
         keyscan = command(
-            [IP, "netns", "exec", "cli", "ssh-keyscan", "-p", str(SSH_PORT), HOST_IP],
+            ["ssh-keyscan", "-p", str(SSH_PORT), "127.0.0.1"],
             timeout=20,
             capture=True,
         )
@@ -233,8 +233,8 @@ class Lab:
 
         self.ssh_client = self.start_process(
             [
-                IP, "netns", "exec", "cli", SSH, "-N",
-                "-D", "127.0.0.1:%d" % SOCKS_PORT,
+                SSH, "-N",
+                "-D", "%s:%d" % (HOST_IP, SOCKS_PORT),
                 "-p", str(SSH_PORT),
                 "-i", key,
                 "-o", "UserKnownHostsFile=" + str(known_hosts),
@@ -246,7 +246,7 @@ class Lab:
                 "-o", "ServerAliveCountMax=3",
                 "-o", "Compression=no",
                 "-vv",
-                USER + "@" + HOST_IP,
+                USER + "@127.0.0.1",
             ],
             self.log_path("ssh-client.log"),
         )
@@ -265,8 +265,8 @@ class Lab:
                     "\nsshd log:\n" + server_log[-6000:]
                 )
             probe = subprocess.run(
-                [IP, "netns", "exec", "cli", sys.executable, "-c",
-                 "import socket; s=socket.create_connection(('127.0.0.1',%d),1); s.close()" % SOCKS_PORT],
+                [sys.executable, "-c",
+                 "import socket; s=socket.create_connection(('%s',%d),1); s.close()" % (HOST_IP, SOCKS_PORT)],
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
                 timeout=3,
@@ -349,7 +349,7 @@ class Lab:
                 "--tundev", "tun0",
                 "--netif-ipaddr", "198.18.0.1",
                 "--netif-netmask", "255.255.255.0",
-                "--socks-server-addr", "127.0.0.1:%d" % SOCKS_PORT,
+                "--socks-server-addr", "%s:%d" % (HOST_IP, SOCKS_PORT),
                 "--loglevel", "warning",
             ]
         else:
@@ -361,7 +361,7 @@ class Lab:
                 "  ipv4: 198.18.0.1\n"
                 "  icmp: 'off'\n"
                 "socks5:\n"
-                "  address: 127.0.0.1\n"
+                "  address: %s\n"
                 "  port: %d\n"
                 "  udp: 'udp'\n"
                 "misc:\n"
