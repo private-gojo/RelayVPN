@@ -180,7 +180,6 @@ class Lab:
         home = Path("/home") / USER
         ssh_dir = home / ".ssh"
         ssh_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
-        os.chown(home, 0, 0)
         os.chown(ssh_dir, 0, 0)
         os.chmod(ssh_dir, 0o700)
 
@@ -210,7 +209,7 @@ class Lab:
             "PermitOpen any\n"
             "UsePAM no\n"
             "StrictModes yes\n"
-            "LogLevel ERROR\n" % (SSH_PORT, HOST_IP, self.work / "sshd.pid", USER),
+            "LogLevel DEBUG1\n" % (SSH_PORT, HOST_IP, self.work / "sshd.pid", USER),
             encoding="ascii",
         )
         Path("/run/sshd").mkdir(exist_ok=True)
@@ -244,6 +243,7 @@ class Lab:
                 "-o", "ServerAliveInterval=15",
                 "-o", "ServerAliveCountMax=3",
                 "-o", "Compression=no",
+                "-vv",
                 USER + "@" + HOST_IP,
             ],
             self.log_path("ssh-client.log"),
@@ -251,7 +251,17 @@ class Lab:
         deadline = time.monotonic() + 30
         while time.monotonic() < deadline:
             if self.ssh_client.poll() is not None:
-                raise RuntimeError("SSH client exited before SOCKS listener became ready")
+                client_log = self.log_path("ssh-client.log").read_text(
+                    encoding="utf-8", errors="replace"
+                )
+                server_log = self.log_path("sshd.log").read_text(
+                    encoding="utf-8", errors="replace"
+                )
+                raise RuntimeError(
+                    "SSH client exited before SOCKS listener became ready.\n"
+                    "SSH client log:\n" + client_log[-6000:] +
+                    "\nsshd log:\n" + server_log[-6000:]
+                )
             probe = subprocess.run(
                 [IP, "netns", "exec", "cli", sys.executable, "-c",
                  "import socket; s=socket.create_connection(('127.0.0.1',%d),1); s.close()" % SOCKS_PORT],
