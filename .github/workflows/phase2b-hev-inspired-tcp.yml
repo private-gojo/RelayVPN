@@ -4,6 +4,7 @@ on:
   push:
     branches:
       - phase2b/hev-inspired-tcp
+      - phase2b/tcp-to-socks-ring
   pull_request:
     branches:
       - main

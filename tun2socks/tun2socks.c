@@ -64,6 +64,7 @@
 #include <lwip/ip4_frag.h>
 #include <lwip/nd6.h>
 #include <lwip/ip6_frag.h>
+#include <tun2socks/tcp_ring_buffer.h>
 #include <tun2socks/SocksUdpGwClient.h>
 #include <socks_udp_client/SocksUdpClient.h>
 
@@ -129,7 +130,9 @@ struct tcp_client {
     struct tcp_pcb *pcb;
     int client_closed;
     uint8_t buf[TCP_WND];
-    int buf_used;
+    TcpRingBuffer buf_ring;
+    int socks_send_pending;
+    int socks_send_len;
     char *socks_username;
     BSocksClient socks_client;
     int socks_up;
@@ -1311,6 +1314,13 @@ err_t listener_accept_func (void *arg, struct tcp_pcb *newpcb, err_t err)
         goto fail0;
     }
     client->socks_username = NULL;
+    if (TcpRingBuffer_Init(&client->buf_ring, client->buf, sizeof(client->buf)) < 0) {
+        BLog(BLOG_ERROR, "listener accept: TCP ring buffer initialization failed");
+        free(client);
+        goto fail0;
+    }
+    client->socks_send_pending = 0;
+    client->socks_send_len = 0;
     
     SYNC_DECL
     SYNC_FROMHERE
@@ -1370,9 +1380,6 @@ err_t listener_accept_func (void *arg, struct tcp_pcb *newpcb, err_t err)
     tcp_err(client->pcb, client_err_func);
     tcp_recv(client->pcb, client_recv_func);
     
-    // setup buffer
-    client->buf_used = 0;
-    
     // set SOCKS not up, not closed
     client->socks_up = 0;
     client->socks_closed = 0;
@@ -1404,7 +1411,7 @@ void client_handle_freed_client (struct tcp_client *client)
     client->client_closed = 1;
     
     // if we have data to be sent to SOCKS and can send it, keep sending
-    if (client->buf_used > 0 && !client->socks_closed) {
+    if (TcpRingBuffer_GetUsed(&client->buf_ring) > 0 && !client->socks_closed) {
         client_log(client, BLOG_INFO, "waiting untill buffered data is sent to SOCKS");
     } else {
         if (!client->socks_closed) {
@@ -1572,25 +1579,54 @@ err_t client_recv_func (void *arg, struct tcp_pcb *tpcb, struct pbuf *p, err_t e
     } else {
         ASSERT(p->tot_len > 0)
         
-        // check if we have enough buffer
-        if (p->tot_len > sizeof(client->buf) - client->buf_used) {
+        int was_empty = (TcpRingBuffer_GetUsed(&client->buf_ring) == 0);
+        TcpRingBufferRegion regions[2];
+        int region_count;
+        int p_tot_len = p->tot_len;
+        int i;
+        size_t copied = 0;
+
+        // Preserve the existing receive-window limit and reject data until space is available.
+        if ((size_t)p_tot_len > TcpRingBuffer_GetWritable(&client->buf_ring)) {
             client_log(client, BLOG_ERROR, "no buffer for data !?!");
             DEAD_LEAVE2(client->dead_aborted)
             return ERR_MEM;
         }
-        
-        // copy data to buffer
-        ASSERT_EXECUTE(pbuf_copy_partial(p, client->buf + client->buf_used, p->tot_len, 0) == p->tot_len)
-        client->buf_used += p->tot_len;
-        
-        // free pbuff
-        int p_tot_len = p->tot_len;
+
+        region_count = TcpRingBuffer_GetWriteRegions(&client->buf_ring, regions);
+        if (region_count <= 0) {
+            client_log(client, BLOG_ERROR, "TCP ring buffer has no writable region");
+            DEAD_LEAVE2(client->dead_aborted)
+            return ERR_MEM;
+        }
+
+        // Copy the pbuf chain into the ring buffer without compacting existing data.
+        for (i = 0; i < region_count && copied < (size_t)p_tot_len; i++) {
+            size_t to_copy = regions[i].len;
+            if (to_copy > (size_t)p_tot_len - copied) {
+                to_copy = (size_t)p_tot_len - copied;
+            }
+            if (to_copy > 0) {
+                ASSERT_EXECUTE(pbuf_copy_partial(
+                    p,
+                    regions[i].data,
+                    (u16_t)to_copy,
+                    (u16_t)copied
+                ) == to_copy)
+                copied += to_copy;
+            }
+        }
+
+        ASSERT_EXECUTE(copied == (size_t)p_tot_len)
+        ASSERT_EXECUTE(TcpRingBuffer_WriteCommit(&client->buf_ring, (size_t)p_tot_len) == 0)
+
+        // Free the pbuf after the payload has been copied into owned storage.
         pbuf_free(p);
-        
-        // if there was nothing in the buffer before, and SOCKS is up, start send data
-        if (client->buf_used == p_tot_len && client->socks_up) {
-            ASSERT(!client->socks_closed) // this callback is removed when SOCKS is closed
-            
+
+        // Start the sender only on the empty-to-nonempty transition.
+        if (was_empty && client->socks_up && !client->socks_send_pending) {
+            ASSERT(!client->socks_closed)
+
             SYNC_DECL
             SYNC_FROMHERE
             client_send_to_socks(client);
@@ -1637,7 +1673,7 @@ void client_socks_handler (struct tcp_client *client, int event)
             client->socks_up = 1;
             
             // start sending data if there is any
-            if (client->buf_used > 0) {
+            if (TcpRingBuffer_GetUsed(&client->buf_ring) > 0) {
                 client_send_to_socks(client);
             }
             
@@ -1659,39 +1695,54 @@ void client_socks_handler (struct tcp_client *client, int event)
 
 void client_send_to_socks (struct tcp_client *client)
 {
+    TcpRingBufferRegion regions[2];
+
     ASSERT(!client->socks_closed)
     ASSERT(client->socks_up)
-    ASSERT(client->buf_used > 0)
-    
-    // schedule sending
-    StreamPassInterface_Sender_Send(client->socks_send_if, client->buf, client->buf_used);
+    ASSERT(!client->socks_send_pending)
+
+    if (TcpRingBuffer_GetReadRegions(&client->buf_ring, regions) <= 0 ||
+        regions[0].len == 0 || regions[0].len > INT_MAX) {
+        BLog(BLOG_ERROR, "TCP ring buffer has no readable region");
+        return;
+    }
+
+    // Send one contiguous region; the next region is scheduled after completion.
+    client->socks_send_pending = 1;
+    client->socks_send_len = (int)regions[0].len;
+    StreamPassInterface_Sender_Send(
+        client->socks_send_if,
+        regions[0].data,
+        client->socks_send_len
+    );
 }
 
 void client_socks_send_handler_done (struct tcp_client *client, int data_len)
 {
     ASSERT(!client->socks_closed)
     ASSERT(client->socks_up)
-    ASSERT(client->buf_used > 0)
+    ASSERT(client->socks_send_pending)
     ASSERT(data_len > 0)
-    ASSERT(data_len <= client->buf_used)
-    
-    // remove sent data from buffer
-    memmove(client->buf, client->buf + data_len, client->buf_used - data_len);
-    client->buf_used -= data_len;
-    
+    ASSERT(data_len <= client->socks_send_len)
+    ASSERT((size_t)data_len <= TcpRingBuffer_GetReadable(&client->buf_ring))
+
+    client->socks_send_pending = 0;
+    client->socks_send_len = 0;
+
+    // Retire only bytes accepted by SOCKS, then allow lwIP to advance its receive window.
+    ASSERT_EXECUTE(TcpRingBuffer_ReadCommit(&client->buf_ring, (size_t)data_len) == 0)
+    ASSERT_EXECUTE(TcpRingBuffer_ReadRelease(&client->buf_ring, (size_t)data_len) == 0)
+
     if (!client->client_closed) {
-        // confirm sent data
-        tcp_recved(client->pcb, data_len);
+        tcp_recved(client->pcb, (u16_t)data_len);
     }
-    
-    if (client->buf_used > 0) {
-        // send any further data
-        StreamPassInterface_Sender_Send(client->socks_send_if, client->buf, client->buf_used);
+
+    if (TcpRingBuffer_GetReadable(&client->buf_ring) > 0) {
+        client_send_to_socks(client);
     }
     else if (client->client_closed) {
-        // client was closed we've sent everything we had buffered; we're done with it
+        // The client closed after sending; drain buffered bytes before releasing SOCKS.
         client_log(client, BLOG_INFO, "removing after client went down");
-        
         client_free_socks(client);
     }
 }
