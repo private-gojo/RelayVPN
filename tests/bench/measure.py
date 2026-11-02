@@ -35,6 +35,7 @@ CONCURRENCY = (1, 8, 64, 256)
 ROUNDS = 8
 TTFB_SAMPLES = 200
 MEMORY_COUNTS = (16, 64, 256, 512, 1024)
+NETDEV_QUEUE_LENGTH = 8192
 
 
 def command(args, timeout=30, check=True, capture=False):
@@ -342,6 +343,7 @@ class Lab:
 
         command([IP, "-n", "cli", "link", "add", "ifb0", "type", "ifb"])
         command([IP, "-n", "cli", "link", "set", "ifb0", "up"])
+        command([IP, "-n", "cli", "link", "set", "ifb0", "txqueuelen", str(NETDEV_QUEUE_LENGTH)])
         command([IP, "netns", "exec", "cli", "tc", "qdisc", "replace", "dev", "tun0", "root",
                  "netem", "limit", "32768", "delay", delay])
         command([IP, "netns", "exec", "cli", "tc", "qdisc", "replace", "dev", "tun0", "clsact"])
@@ -373,24 +375,62 @@ class Lab:
         ingress = command([IP, "netns", "exec", "cli", "tc", "-s", "filter", "show",
                            "dev", "tun0", "ingress"], check=False, capture=True)
         sections.append("=== tun0 ingress filters ===\n%s\n" % ingress.stdout)
-        link_stats = command([IP, "-n", "cli", "-s", "link", "show", "dev", "tun0"],
-                             check=False, capture=True)
-        sections.append("=== tun0 link stats ===\n%s\n" % link_stats.stdout)
+        for device in ("tun0", "ifb0"):
+            link_stats = command([IP, "-n", "cli", "-s", "link", "show", "dev", device],
+                                 check=False, capture=True)
+            if link_stats.stdout:
+                sections.append("=== %s link stats ===\n%s\n" % (device, link_stats.stdout))
         safe_label = label.replace("/", "_")
         path = self.artifacts / ("path-stats-%s.txt" % safe_label)
         path.write_text("\n".join(sections), encoding="utf-8")
-        return self.count_qdisc_drops(path.read_text(encoding="utf-8"))
+        return self.count_path_drops(path.read_text(encoding="utf-8"))
 
     @staticmethod
-    def count_qdisc_drops(text):
-        qdisc_sections = re.findall(
-            r"=== qdisc [^=]+ ===\s*(.*?)(?=\n===|\Z)", text, re.DOTALL
-        )
-        if not qdisc_sections:
+    def count_path_drops(text):
+        qdisc_sections = dict(re.findall(
+            r"=== qdisc (tun0|ifb0) ===\s*(.*?)(?=\n===|\Z)", text, re.DOTALL
+        ))
+        tun_qdisc = qdisc_sections.get("tun0", "")
+        if not re.search(r"^\s*qdisc\s+\S+", tun_qdisc, re.MULTILINE):
             return None
-        return sum(
-            int(value) for value in re.findall(r"\bdropped\s+(\d+)", text)
+        qdisc_drops = sum(
+            int(value)
+            for section in qdisc_sections.values()
+            for value in re.findall(r"\bdropped\s+(\d+)", section)
         )
+
+        def device_drops(section):
+            totals = {}
+            lines = section.splitlines()
+            for index, line in enumerate(lines):
+                header = re.match(r"^\s*(RX|TX):\s*(.+?)\s*$", line)
+                if not header or index + 1 >= len(lines):
+                    continue
+                columns = header.group(2).split()
+                values = lines[index + 1].split()
+                if "dropped" not in columns or len(values) < len(columns):
+                    return None
+                try:
+                    totals[header.group(1)] = int(values[columns.index("dropped")])
+                except ValueError:
+                    return None
+            if set(totals) != {"RX", "TX"}:
+                return None
+            return sum(totals.values())
+
+        link_sections = dict(re.findall(
+            r"=== (tun0|ifb0) link stats ===\s*(.*?)(?=\n===|\Z)", text, re.DOTALL
+        ))
+        tun_drops = device_drops(link_sections.get("tun0", ""))
+        if tun_drops is None:
+            return None
+
+        ifb_drops = 0
+        if "ifb0" in link_sections:
+            ifb_drops = device_drops(link_sections["ifb0"])
+            if ifb_drops is None:
+                return None
+        return qdisc_drops + tun_drops + ifb_drops
 
     def start_engine(self, arm):
         if self.engine is not None:
@@ -444,6 +484,7 @@ class Lab:
         else:
             raise TimeoutError("%s engine did not create tun0" % name)
         command([IP, "-n", "cli", "link", "set", "tun0", "mtu", "1500", "up"])
+        command([IP, "-n", "cli", "link", "set", "tun0", "txqueuelen", str(NETDEV_QUEUE_LENGTH)])
         command([IP, "-n", "cli", "route", "replace", "default", "dev", "tun0"])
         self.apply_rtt(0)
 
@@ -656,7 +697,9 @@ class Lab:
                     try:
                         self.apply_rtt(rtt)
                         self.run_ttfb_profile(arm, rtt, ttfb_writer)
-                        self.save_path_stats("%s-rtt%d-ttfb" % (arm["label"], rtt))
+                        drops = self.save_path_stats("%s-rtt%d-ttfb" % (arm["label"], rtt))
+                        if drops is None or drops > 0:
+                            raise RuntimeError("invalid TTFB path: arm=%s RTT=%d path_drops=%s" % (arm["label"], rtt, drops))
                     finally:
                         self.stop_engine()
                     ttfb_file.flush()
@@ -677,9 +720,14 @@ class Lab:
                                 before_cpu = proc_cpu_ticks(pid)
                                 result = self.run_parallel_downloads(concurrency, path)
                                 self.check_engine()
-                                self.save_path_stats("%s-rtt%d-c%d-round%d" % (
+                                drops = self.save_path_stats("%s-rtt%d-c%d-round%d" % (
                                     arm["label"], rtt, concurrency, round_number + 1
                                 ))
+                                if drops is None or drops > 0:
+                                    raise RuntimeError(
+                                        "invalid emulator path: arm=%s RTT=%d C=%d round=%d path_drops=%s"
+                                        % (arm["label"], rtt, concurrency, round_number + 1, drops)
+                                    )
                                 after_cpu = proc_cpu_ticks(pid)
                                 after_status = proc_status(pid)
                                 cpu_seconds = (
@@ -771,7 +819,7 @@ class Lab:
                         )
                         stat_path = source / stat_name
                         drops = (
-                            self.count_qdisc_drops(stat_path.read_text(encoding="utf-8"))
+                            self.count_path_drops(stat_path.read_text(encoding="utf-8"))
                             if stat_path.is_file() else None
                         )
                         if drops is None or drops > 0:
@@ -801,7 +849,7 @@ class Lab:
                 stat_name = "path-stats-%s-rtt%d-ttfb.txt" % (arm["label"], rtt)
                 stat_path = source / stat_name
                 drops = (
-                    self.count_qdisc_drops(stat_path.read_text(encoding="utf-8"))
+                    self.count_path_drops(stat_path.read_text(encoding="utf-8"))
                     if stat_path.is_file() else None
                 )
                 valid = drops == 0
@@ -880,7 +928,7 @@ class Lab:
                     )
                     if drops is None or drops > 0:
                         raise RuntimeError(
-                            "invalid TTFB path: %s RTT=%d qdisc_drops=%s"
+                            "invalid TTFB path: %s RTT=%d path_drops=%s"
                             % (arm["label"], rtt, drops)
                         )
                     ttfb_file.flush()
@@ -909,7 +957,7 @@ class Lab:
                             if drops is None or drops > 0:
                                 raise RuntimeError(
                                     "invalid emulator path: arm=%s RTT=%d C=%d "
-                                    "round=%d qdisc_drops=%s"
+                                    "round=%d path_drops=%s"
                                     % (arm["label"], rtt, concurrency,
                                        round_number + 1, drops)
                                 )
@@ -981,6 +1029,9 @@ class Lab:
                     start = time.monotonic()
                     ok, error = self.download_hash(path, self.large_hashes[path])
                     elapsed = time.monotonic() - start
+                    drops = self.save_path_stats("calibration-p2d-run%d" % number)
+                    if drops is None or drops > 0:
+                        raise RuntimeError("invalid calibration path: run=%d path_drops=%s" % (number, drops))
                     after_cpu = proc_cpu_ticks(pid)
                     status_after = proc_status(pid)
                     cpu_seconds = (

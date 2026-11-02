@@ -26,13 +26,15 @@ for spec in BASE:b1c51a6 P2B0:0c0ef9d P2B:f0b247e P2C:95fcf20 P2D:523b38b; do
   cmake -S "$tree" -B "$build" \
     -G "Unix Makefiles" \
     -DCMAKE_BUILD_TYPE=RelWithDebInfo \
+    -DCMAKE_C_COMPILER_LAUNCHER=ccache \
+    -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
     -DBUILD_NOTHING_BY_DEFAULT=ON \
     -DBUILD_TUN2SOCKS=ON \
     -DBUILD_UDPGW=ON \
     -DBUILD_TESTS=OFF \
     -DBUILD_HEV=OFF
 
-  cmake --build "$build" --target badvpn-tun2socks --parallel 2
+  cmake --build "$build" --target badvpn-tun2socks --parallel "$(nproc)"
   binary="$build/tun2socks/badvpn-tun2socks"
   test -x "$binary"
 
@@ -86,14 +88,18 @@ HEV_BUILD="$BUILD_ROOT/HEV"
 cmake -S "$GITHUB_WORKSPACE" -B "$HEV_BUILD" \
   -G "Unix Makefiles" \
   -DCMAKE_BUILD_TYPE=RelWithDebInfo \
+  -DCMAKE_C_COMPILER_LAUNCHER=ccache \
+  -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
   -DBUILD_HEV=ON \
   -DBUILD_NOTHING_BY_DEFAULT=ON \
   -DBUILD_TUN2SOCKS=OFF \
   -DBUILD_UDPGW=OFF \
   -DBUILD_TESTS=OFF
-cmake --build "$HEV_BUILD" --target hev-bin --parallel 2
+cmake --build "$HEV_BUILD" --target hev-bin --parallel "$(nproc)"
 HEV_BINARY="$GITHUB_WORKSPACE/third_party/hev-socks5-tunnel/bin/hev-socks5-tunnel"
 test -x "$HEV_BINARY"
+
+ccache --show-stats || true
 MAIN_SHA="$(git rev-parse 523b38b^{commit})"
 python3 - "$MANIFEST" "$MAIN_SHA" "$HEV_BINARY" <<'PY'
 import json
