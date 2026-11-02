@@ -812,6 +812,15 @@ class Lab:
                         valid = False
                     if any(int(row["errors"]) != 0 for row in arm_rows):
                         valid = False
+                    if any(row.get("commit", "").lower() != arm["sha"].lower()
+                           for row in arm_rows):
+                        valid = False
+                    if any(
+                        (int(row["round"]) == 1 and row.get("warmup") != "1")
+                        or (int(row["round"]) != 1 and row.get("warmup") != "0")
+                        for row in arm_rows
+                    ):
+                        valid = False
                     for round_number in expected_rounds:
                         stat_name = (
                             "path-stats-%s-rtt%d-c%d-round%d.txt"
@@ -860,6 +869,9 @@ class Lab:
                     if len(group) != TTFB_SAMPLES or samples != set(range(1, TTFB_SAMPLES + 1)):
                         valid = False
                     if any(int(row["errors"]) != 0 for row in group):
+                        valid = False
+                    if any(row.get("commit", "").lower() != arm["sha"].lower()
+                           for row in group):
                         valid = False
                     cell_rows.extend(group)
                 if valid:
