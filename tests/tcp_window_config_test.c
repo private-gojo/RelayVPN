@@ -1,7 +1,6 @@
 #include <stdio.h>
 
-#include <lwip/opt.h>
-#include <lwip/tcp.h>
+#include <lwipopts.h>
 #include <tun2socks/tun2socks.h>
 
 #if !LWIP_WND_SCALE
@@ -30,10 +29,6 @@
 
 int main(void)
 {
-    if (sizeof(tcpwnd_size_t) < sizeof(u32_t)) {
-        return 1;
-    }
-
     printf(
         "TCP_WND=%d TCP_SND_BUF=%d TCP_RCV_SCALE=%d CLIENT_SOCKS_RECV_BUF_SIZE=%d\n",
         TCP_WND,
