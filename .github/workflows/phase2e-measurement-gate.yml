@@ -7,6 +7,10 @@ on:
     paths-ignore:
       - .github/workflows/phase2e-measurement-gate.yml
       - .github/workflows/phase2e-report-validation.yml
+      - .github/workflows/phase2e-sanitizers.yml
+      - tests/CMakeLists.txt
+      - tests/engine-baseline.sh
+      - tests/tcp_ring_buffer_stress_test.c
       - tests/bench/measure.py
       - tests/bench/summarize.py
       - tests/bench/test_summarize.py
