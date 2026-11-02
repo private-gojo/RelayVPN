@@ -27,32 +27,6 @@ on:
       - tests/relayvpn-engine-dispatch.sh
       - tests/engine-baseline.sh
       - third_party/hev-socks5-tunnel/**
-  pull_request:
-    branches:
-      - main
-    paths:
-      - CMakeLists.txt
-      - base/**
-      - system/**
-      - flow/**
-      - flowextra/**
-      - misc/**
-      - structure/**
-      - tun2socks/**
-      - socksclient/**
-      - socks_udp_client/**
-      - udpgw_client/**
-      - tuntap/**
-      - lwip/**
-      - tests/CMakeLists.txt
-      - tests/tcp_ring_buffer_test.c
-      - tests/tcp_ring_buffer_stress_test.c
-      - tests/tcp_window_config_test.c
-      - tests/chunkbuffer2_test.c
-      - tests/bproto_test.c
-      - tests/relayvpn-engine-dispatch.sh
-      - tests/engine-baseline.sh
-      - third_party/hev-socks5-tunnel/**
   workflow_dispatch:
 
 permissions:
