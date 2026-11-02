@@ -76,12 +76,12 @@ def main():
     results = read_csv(artifact_dir / "results.csv")
     measured = [row for row in results if row["warmup"] == "0"]
     grouped = defaultdict(list)
-    by_round = {}
+    all_grouped = defaultdict(list)
     for row in measured:
         key = (row["arm"], int(row["rtt_ms"]), int(row["concurrency"]))
-        grouped[key].append(row)
-        by_round[(row["arm"], int(row["rtt_ms"]), int(row["concurrency"]),
-                  int(row["round"]))] = row
+        all_grouped[key].append(row)
+        if int(row["errors"]) == 0:
+            grouped[key].append(row)
 
     lines = [
         "# Phase 2e measurement report",
@@ -106,21 +106,22 @@ def main():
         for concurrency in (1, 8, 64, 256):
             for arm in arms:
                 rows = grouped.get((arm["label"], rtt, concurrency), [])
+                all_rows = all_grouped.get((arm["label"], rtt, concurrency), [])
                 throughput = stats([number(row, "throughput_mbps") for row in rows])
                 cpu = stats([number(row, "cpu_seconds_per_gib") for row in rows])
                 rss = stats([number(row, "rss_kib") for row in rows])
                 hwm = stats([number(row, "hwm_kib") for row in rows])
-                errors = sum(int(row["errors"]) for row in rows)
+                errors = sum(int(row["errors"]) for row in all_rows)
                 profile_stats[(arm["label"], rtt, concurrency)] = throughput
-                if throughput is None:
-                    continue
                 lines.append(
                     "| %d | %d | %s | %s | %s–%s | %s–%s | %s%% | %s | %s | %s | %d |" % (
                         rtt, concurrency, arm["label"],
-                        fmt(throughput["median"]),
-                        fmt(throughput["p25"]), fmt(throughput["p75"]),
-                        fmt(throughput["min"]), fmt(throughput["max"]),
-                        fmt(throughput["cv"] * 100, 1),
+                        fmt(throughput["median"] if throughput else None),
+                        fmt(throughput["p25"] if throughput else None),
+                        fmt(throughput["p75"] if throughput else None),
+                        fmt(throughput["min"] if throughput else None),
+                        fmt(throughput["max"] if throughput else None),
+                        fmt(throughput["cv"] * 100, 1) if throughput else "—",
                         fmt(cpu["median"] if cpu else None, 4),
                         fmt(rss["median"] if rss else None, 0),
                         fmt(hwm["median"] if hwm else None, 0),
