@@ -7,6 +7,7 @@ BUILD_ROOT="$RUNNER_TEMP/phase2e-builds"
 MANIFEST="$ARTIFACT_DIR/manifest.json"
 
 mkdir -p "$ARTIFACT_DIR" "$WORKTREE_ROOT" "$BUILD_ROOT"
+git config --global --add safe.directory "$GITHUB_WORKSPACE"
 printf '{"arms":[]}\n' > "$MANIFEST"
 
 for spec in BASE:b1c51a6 P2B0:0c0ef9d P2B:f0b247e P2C:95fcf20 P2D:523b38b; do
