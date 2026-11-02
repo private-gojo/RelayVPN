@@ -568,7 +568,6 @@ class Lab:
             ttfb_writer.writeheader()
 
             for rtt in RTT_PROFILES:
-                self.apply_rtt(rtt)
                 for arm in arms:
                     self.start_engine(arm)
                     try:
