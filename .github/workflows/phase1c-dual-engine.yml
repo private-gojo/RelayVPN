@@ -4,9 +4,6 @@ on:
   push:
     branches:
       - phase1c/dual-engine
-  pull_request:
-    branches:
-      - main
   workflow_dispatch:
 
 permissions:
