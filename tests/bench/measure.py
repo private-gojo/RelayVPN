@@ -400,7 +400,7 @@ class Lab:
             totals = {}
             lines = section.splitlines()
             for index, line in enumerate(lines):
-                header = re.match(r"^\\s*(RX|TX):\\s*(.+?)\\s*$", line)
+                header = re.match(r"^\s*(RX|TX):\s*(.+?)\s*$", line)
                 if not header or index + 1 >= len(lines):
                     continue
                 columns = header.group(2).split()
@@ -416,7 +416,7 @@ class Lab:
             return totals
 
         link_sections = dict(re.findall(
-            r"=== (tun0|ifb0) link stats ===\\s*(.*?)(?=\\n===|\\Z)", text, re.DOTALL
+            r"=== (tun0|ifb0) link stats ===\s*(.*?)(?=\n===|\Z)", text, re.DOTALL
         ))
         tun_counters = device_drop_counters(link_sections.get("tun0", ""))
         if tun_counters is None:
