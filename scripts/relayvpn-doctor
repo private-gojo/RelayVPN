@@ -1,0 +1,178 @@
+#!/usr/bin/env bash
+set -uo pipefail
+
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd -- "$SCRIPT_DIR/.." && pwd)"
+TUN_DEVICE="${RELAYVPN_TUN_DEVICE:-/dev/net/tun}"
+FAILURES=0
+WARNINGS=0
+PASSES=0
+
+usage() {
+    printf 'Usage: relayvpn-doctor [all|badvpn|hev]\n'
+}
+
+report() {
+    local level="$1"
+    shift
+    printf '[%s] %s\n' "$level" "$*"
+    case "$level" in
+        OK) PASSES=$((PASSES + 1)) ;;
+        WARN) WARNINGS=$((WARNINGS + 1)) ;;
+        FAIL) FAILURES=$((FAILURES + 1)) ;;
+    esac
+}
+
+find_binary() {
+    local engine="$1"
+    local override=""
+    local sibling=""
+    local source_tree=""
+    local command_name=""
+
+    case "$engine" in
+        badvpn)
+            override="${RELAYVPN_BADVPN_BIN:-}"
+            sibling="badvpn-tun2socks"
+            source_tree="$REPO_ROOT/build/tun2socks/badvpn-tun2socks"
+            command_name="badvpn-tun2socks"
+            ;;
+        hev)
+            override="${RELAYVPN_HEV_BIN:-}"
+            sibling="hev-socks5-tunnel"
+            source_tree="$REPO_ROOT/third_party/hev-socks5-tunnel/bin/hev-socks5-tunnel"
+            command_name="hev-socks5-tunnel"
+            ;;
+    esac
+
+    if [[ -n "$override" ]]; then
+        [[ -x "$override" && ! -d "$override" ]] || return 1
+        RESOLVED_BINARY="$override"
+        return 0
+    fi
+
+    if [[ -x "$SCRIPT_DIR/$sibling" ]]; then
+        RESOLVED_BINARY="$SCRIPT_DIR/$sibling"
+        return 0
+    fi
+
+    if [[ -x "$source_tree" ]]; then
+        RESOLVED_BINARY="$source_tree"
+        return 0
+    fi
+
+    if command -v "$command_name" >/dev/null 2>&1; then
+        RESOLVED_BINARY="$(command -v "$command_name")"
+        return 0
+    fi
+
+    return 1
+}
+
+check_binary() {
+    local engine="$1"
+    local binary=""
+
+    if ! find_binary "$engine"; then
+        report FAIL "$engine engine binary not found or not executable"
+        return
+    fi
+
+    binary="$RESOLVED_BINARY"
+    report OK "$engine binary: $binary"
+
+    if ! command -v ldd >/dev/null 2>&1; then
+        report WARN "ldd unavailable; skipped shared-library inspection for $engine"
+        return
+    fi
+
+    local dependencies
+    local ldd_status=0
+    dependencies="$(ldd "$binary" 2>&1)" || ldd_status=$?
+
+    if grep -q 'not found' <<< "$dependencies"; then
+        report FAIL "$engine has unresolved shared-library dependencies"
+        return
+    fi
+
+    if [[ "$ldd_status" -ne 0 ]]; then
+        if grep -Eqi 'not a dynamic executable|statically linked' <<< "$dependencies"; then
+            report OK "$engine is statically linked"
+            return
+        fi
+        report FAIL "ldd could not inspect $engine binary: $dependencies"
+        return
+    fi
+
+    if [[ "$engine" == "hev" ]] &&
+       grep -Eq 'lib(yaml|lwip|hev-task-system)\.so' <<< "$dependencies"; then
+        report FAIL "Hev unexpectedly depends on a vendored shared library"
+        return
+    fi
+
+    report OK "$engine shared-library dependencies resolved"
+}
+
+case "${1:-all}" in
+    all)
+        ENGINES=(badvpn hev)
+        ;;
+    badvpn|hev)
+        ENGINES=("$1")
+        ;;
+    -h|--help|help)
+        usage
+        exit 0
+        ;;
+    *)
+        usage >&2
+        exit 2
+        ;;
+esac
+
+printf 'RelayVPN doctor\n'
+printf 'Platform: %s\n' "$(uname -s 2>/dev/null || printf unknown)"
+printf 'TUN device: %s\n' "$TUN_DEVICE"
+
+if [[ "$(uname -s 2>/dev/null || true)" == "Linux" ]]; then
+    report OK "Linux platform detected"
+else
+    report WARN "The integrated Hev build target currently requires native Linux"
+fi
+
+if [[ -c "$TUN_DEVICE" ]]; then
+    if [[ -r "$TUN_DEVICE" && -w "$TUN_DEVICE" ]]; then
+        report OK "TUN device exists and is readable/writable"
+    else
+        report WARN "TUN device exists but current user cannot read and write it"
+    fi
+else
+    report WARN "TUN device not found; Android VPNService or another TUN provider may supply a file descriptor instead"
+fi
+
+if command -v ip >/dev/null 2>&1; then
+    report OK "iproute2 command available"
+else
+    report WARN "ip command unavailable; interface and route setup needs iproute2"
+fi
+
+if [[ "$(id -u)" -eq 0 ]]; then
+    report OK "running as root"
+else
+    cap_eff="$(awk '/^CapEff:/ {print $2}' /proc/self/status 2>/dev/null || true)"
+    if [[ -n "$cap_eff" ]] && (( (16#$cap_eff & (1 << 12)) != 0 )); then
+        report OK "CAP_NET_ADMIN is available"
+    else
+        report WARN "CAP_NET_ADMIN not detected; creating/configuring TUN interfaces may require VPNService or elevated privileges"
+    fi
+fi
+
+for engine in "${ENGINES[@]}"; do
+    check_binary "$engine"
+done
+
+printf '\nSummary: %d passed, %d warning(s), %d failure(s)\n' "$PASSES" "$WARNINGS" "$FAILURES"
+if [[ "$FAILURES" -gt 0 ]]; then
+    exit 1
+fi
+exit 0
