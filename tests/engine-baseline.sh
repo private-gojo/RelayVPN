@@ -213,7 +213,7 @@ benchmark_engine() {
         seq 1 50 | xargs -P 50 -I{} sh -c '
             sudo ip netns exec cli curl --noproxy "*" --fail --silent --show-error \
               http://198.51.100.10:8080/small.txt -o "$1/$2-$3-parallel-{}.txt"
-            cmp "$1/www/small.txt" "$1/$2-parallel-{}.txt"
+            cmp "$1/www/small.txt" "$1/$2-$3-parallel-{}.txt"
         ' _ "$ROOT" "$engine" "$delay_ms"
         echo "$engine: 50/50 concurrent TCP requests passed at ${delay_ms}ms one-way delay"
     done
