@@ -62,17 +62,17 @@ def make_artifacts(root):
                     })
     write_csv(artifacts / "ttfb.csv", ttfb_fields, ttfb)
 
-    memory_fields = ["arm", "mode", "requested", "connected", "client_errors",
+    memory_fields = ["arm", "commit", "mode", "requested", "connected", "client_errors",
                      "peak_delta_bytes_per_connection", "hwm_delta_bytes_per_connection",
                      "post_delta_bytes_per_connection"]
     memory = []
     for arm in ARMS:
         for count in (16, 64, 256, 512, 1024):
             for mode in ("idle", "stalled"):
-                memory.append({"arm": arm["label"], "mode": mode, "requested": count,
-                               "connected": count, "client_errors": 0})
-        memory.append({"arm": arm["label"], "mode": "idle", "requested": 1100,
-                       "connected": 1100, "client_errors": 0})
+                memory.append({"arm": arm["label"], "commit": arm["sha"], "mode": mode,
+                               "requested": count, "connected": count, "client_errors": 0})
+        memory.append({"arm": arm["label"], "commit": arm["sha"], "mode": "idle",
+                       "requested": 1100, "connected": 1100, "client_errors": 0})
     write_csv(artifacts / "memory.csv", memory_fields, memory)
 
     calibration_fields = ["arm", "commit", "round", "bytes", "elapsed_ms",
@@ -131,6 +131,17 @@ class SummaryReportTests(unittest.TestCase):
             result = self.run_summarizer(artifacts, manifest)
             self.assertNotEqual(result.returncode, 0)
             self.assertIn("expected 200 TTFB rows", result.stderr)
+
+    def test_memory_commit_mismatch_fails_closed(self):
+        with tempfile.TemporaryDirectory() as temp:
+            artifacts, manifest = make_artifacts(Path(temp))
+            rows = list(csv.DictReader((artifacts / "memory.csv").open(
+                newline="", encoding="utf-8")))
+            rows[0]["commit"] = "c" * 40
+            write_csv(artifacts / "memory.csv", list(rows[0]), rows)
+            result = self.run_summarizer(artifacts, manifest)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("commit SHA mismatch", result.stderr)
 
     def test_missing_memory_profile_fails_closed(self):
         with tempfile.TemporaryDirectory() as temp:
