@@ -27,8 +27,8 @@
 // name of the program
 #define PROGRAM_NAME "tun2socks"
 
-// Ring capacity must cover the lwIP send buffer because payloads stay pinned until ACK.
-#define CLIENT_SOCKS_RECV_BUF_SIZE 16384
+// Match the lwIP send buffer; submitted bytes remain pinned until TCP ACK.
+#define CLIENT_SOCKS_RECV_BUF_SIZE 131072
 
 // maximum number of udpgw connections
 #define DEFAULT_UDPGW_MAX_CONNECTIONS 256

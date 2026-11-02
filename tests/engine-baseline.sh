@@ -1,19 +1,31 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-ROOT="$RUNNER_TEMP/phase2a"
-ARTIFACT_DIR="$GITHUB_WORKSPACE/phase2a-artifacts"
-TUN_BIN="$RUNNER_TEMP/relayvpn-phase2a-build/tun2socks/badvpn-tun2socks"
+ROOT="${RELAYVPN_BENCHMARK_ROOT:-$RUNNER_TEMP/phase2a}"
+ARTIFACT_DIR="${RELAYVPN_BENCHMARK_ARTIFACT_DIR:-$GITHUB_WORKSPACE/phase2a-artifacts}"
+BUILD_DIR="${RELAYVPN_BUILD_DIR:-$RUNNER_TEMP/relayvpn-phase2a-build}"
+TUN_BIN="$BUILD_DIR/tun2socks/badvpn-tun2socks"
 HEV_BIN="$GITHUB_WORKSPACE/third_party/hev-socks5-tunnel/bin/hev-socks5-tunnel"
+BDP_MODE="${RELAYVPN_BDP_BENCHMARK:-0}"
+
+if [[ "$BDP_MODE" == "1" ]]; then
+    FILE_SIZE=10485760
+    DELAY_PROFILES=(0 10 25)
+    ROUNDS=(1 2)
+else
+    FILE_SIZE=52428800
+    DELAY_PROFILES=(0)
+    ROUNDS=(1 2 3)
+fi
 ENGINE_PID=""
 SAMPLE_PID=""
 SSH_PID=""
 HTTP_PID=""
 
 mkdir -p "$ROOT/www" "$ROOT/logs" "$ARTIFACT_DIR"
-head -c 52428800 /dev/urandom > "$ROOT/www/large.bin"
+head -c "$FILE_SIZE" /dev/urandom > "$ROOT/www/large.bin"
 printf 'RelayVPN engine baseline probe\n' > "$ROOT/www/small.txt"
-printf 'engine,round,bytes,elapsed_ms,throughput_mbps\n' > "$ARTIFACT_DIR/throughput.csv"
+printf 'engine,delay_ms,round,bytes,elapsed_ms,throughput_mbps\n' > "$ARTIFACT_DIR/throughput.csv"
 printf 'engine,elapsed_s,cpu_percent,rss_kib\n' > "$ARTIFACT_DIR/process-samples.csv"
 sha256sum "$ROOT/www/large.bin" | awk '{print $1}' > "$ROOT/expected.sha256"
 
@@ -144,6 +156,18 @@ sample_process() {
     done
 }
 
+apply_link_delay() {
+    local delay_ms="$1"
+
+    if [[ "$delay_ms" == "0" ]]; then
+        sudo tc qdisc del dev veth-root root 2>/dev/null || true
+        sudo ip netns exec cli tc qdisc del dev veth-cli root 2>/dev/null || true
+    else
+        sudo tc qdisc replace dev veth-root root netem delay "${delay_ms}ms"
+        sudo ip netns exec cli tc qdisc replace dev veth-cli root netem delay "${delay_ms}ms"
+    fi
+}
+
 stop_engine() {
     local engine="$1"
     sudo kill -TERM "$ENGINE_PID"
@@ -168,30 +192,39 @@ benchmark_engine() {
     start_engine "$engine"
     sample_process "$engine" &
     SAMPLE_PID=$!
-    for round in 1 2 3; do
-        local start end elapsed bytes actual expected mbps
-        start="$(date +%s%N)"
-        sudo ip netns exec cli curl --noproxy '*' --fail --silent --show-error \
-            http://198.51.100.10:8080/large.bin -o "$ROOT/$engine-$round.bin"
-        end="$(date +%s%N)"
-        elapsed=$(( (end - start) / 1000000 ))
-        bytes="$(stat -c '%s' "$ROOT/$engine-$round.bin")"
-        actual="$(sha256sum "$ROOT/$engine-$round.bin" | awk '{print $1}')"
-        expected="$(cat "$ROOT/expected.sha256")"
-        test "$actual" = "$expected"
-        mbps="$(awk -v b="$bytes" -v ms="$elapsed" 'BEGIN { if (ms > 0) printf "%.2f", (b * 8 / 1000000) / (ms / 1000); else print "0" }')"
-        printf '%s,%s,%s,%s,%s\n' "$engine" "$round" "$bytes" "$elapsed" "$mbps" | tee -a "$ARTIFACT_DIR/throughput.csv"
+    for delay_ms in "${DELAY_PROFILES[@]}"; do
+        apply_link_delay "$delay_ms"
+        echo "--- $engine, one-way delay ${delay_ms}ms ---"
+        for round in "${ROUNDS[@]}"; do
+            local start end elapsed bytes actual expected mbps output
+            output="$ROOT/$engine-$delay_ms-$round.bin"
+            start="$(date +%s%N)"
+            sudo ip netns exec cli curl --noproxy '*' --fail --silent --show-error \
+                http://198.51.100.10:8080/large.bin -o "$output"
+            end="$(date +%s%N)"
+            elapsed=$(( (end - start) / 1000000 ))
+            bytes="$(stat -c '%s' "$output")"
+            actual="$(sha256sum "$output" | awk '{print $1}')"
+            expected="$(cat "$ROOT/expected.sha256")"
+            test "$actual" = "$expected"
+            mbps="$(awk -v b="$bytes" -v ms="$elapsed" 'BEGIN { if (ms > 0) printf "%.2f", (b * 8 / 1000000) / (ms / 1000); else print "0" }')"
+            printf '%s,%s,%s,%s,%s,%s\n' "$engine" "$delay_ms" "$round" "$bytes" "$elapsed" "$mbps" | tee -a "$ARTIFACT_DIR/throughput.csv"
+        done
+        seq 1 50 | xargs -P 50 -I{} sh -c '
+            sudo ip netns exec cli curl --noproxy "*" --fail --silent --show-error \
+              http://198.51.100.10:8080/small.txt -o "$1/$2-$3-parallel-{}.txt"
+            cmp "$1/www/small.txt" "$1/$2-parallel-{}.txt"
+        ' _ "$ROOT" "$engine" "$delay_ms"
+        echo "$engine: 50/50 concurrent TCP requests passed at ${delay_ms}ms one-way delay"
     done
-    seq 1 50 | xargs -P 50 -I{} sh -c '
-        sudo ip netns exec cli curl --noproxy "*" --fail --silent --show-error \
-          http://198.51.100.10:8080/small.txt -o "$1/$2-parallel-{}.txt"
-        cmp "$1/www/small.txt" "$1/$2-parallel-{}.txt"
-    ' _ "$ROOT" "$engine"
-    echo "$engine: 50/50 concurrent TCP requests passed"
     stop_engine "$engine"
 }
 
 benchmark_engine badvpn
 benchmark_engine hev
 cat "$ARTIFACT_DIR/throughput.csv"
-echo 'PASS: both engines completed identical TCP throughput and concurrency workloads'
+if [[ "$BDP_MODE" == "1" ]]; then
+    echo 'PASS: both engines completed TCP throughput and concurrency workloads at 0ms, 10ms, and 25ms one-way delay'
+else
+    echo 'PASS: both engines completed identical TCP throughput and concurrency workloads'
+fi
