@@ -7,6 +7,8 @@ add_executable(tcp_ring_buffer_test
     ../tun2socks/tcp_ring_buffer.c
 )
 
+add_executable(tcp_window_config_test tcp_window_config_test.c)
+
 if (BUILDING_THREADWORK)
     add_executable(threadwork_test threadwork_test.c)
     target_link_libraries(threadwork_test threadwork)

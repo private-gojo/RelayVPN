@@ -62,8 +62,16 @@
 #define MEMP_NUM_TCP_PCB_LISTEN 16
 #define MEMP_NUM_TCP_PCB 1024
 #define TCP_MSS 1460
-#define TCP_SND_BUF 16384
-#define TCP_SND_QUEUELEN (4 * (TCP_SND_BUF)/(TCP_MSS))
+#define LWIP_WND_SCALE 1
+#define TCP_RCV_SCALE 2
+#define TCP_WND 131072
+#define TCP_SND_BUF 131072
+#define TCP_SND_QUEUELEN (4 * (TCP_SND_BUF) / (TCP_MSS))
+#define TCP_SNDLOWAT 32768
+
+#if TCP_WND > 65535 && !LWIP_WND_SCALE
+#error "TCP window scaling is required for receive windows larger than 65535 bytes"
+#endif
 
 #define MEM_LIBC_MALLOC 1
 #define MEMP_MEM_MALLOC 1
