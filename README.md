@@ -1,13 +1,10 @@
-**This repository has been archived and is not being maintained by the author any longer.**
-
-# BadVPN
+# RelayVPN
 
 ## Introduction
 
-In this project I host some of my open-source networking software.
-All of the software is written in C and utilizes a custom-developed framework for event-driven programming.
-The extensive code sharing is the reason all the software is packaged together.
-However, it is possible to compile only the required components to avoid extra dependencies.
+RelayVPN is a dual-engine TUN-to-SOCKS5 integration built around the BadVPN tun2socks engine and the vendored Hev SOCKS5 Tunnel engine. The engines remain independent and retain their native command-line options and configuration formats.
+
+The BadVPN source components retain their upstream BSD 3-Clause licensing. Third-party components and their licenses are documented in their respective source directories and `VENDOR.md`.
 
 ### NCD programming language
 
