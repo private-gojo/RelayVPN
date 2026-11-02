@@ -280,26 +280,26 @@ class Lab:
         delay = "%gms" % (rtt_ms / 2.0)
         command([IP, "-n", "cli", "link", "del", "ifb0"], check=False)
         if not rtt_ms:
-            command([IP, "-n", "cli", "tc", "qdisc", "del", "dev", "tun0", "root"], check=False)
-            command([IP, "-n", "cli", "tc", "qdisc", "del", "dev", "tun0", "clsact"], check=False)
+            command([IP, "netns", "exec", "cli", "tc", "qdisc", "del", "dev", "tun0", "root"], check=False)
+            command([IP, "netns", "exec", "cli", "tc", "qdisc", "del", "dev", "tun0", "clsact"], check=False)
             return
 
         command([IP, "-n", "cli", "link", "add", "ifb0", "type", "ifb"])
         command([IP, "-n", "cli", "link", "set", "ifb0", "up"])
-        command([IP, "-n", "cli", "tc", "qdisc", "replace", "dev", "tun0", "root",
+        command([IP, "netns", "exec", "cli", "tc", "qdisc", "replace", "dev", "tun0", "root",
                  "netem", "delay", delay])
-        command([IP, "-n", "cli", "tc", "qdisc", "replace", "dev", "tun0", "clsact"])
-        command([IP, "-n", "cli", "tc", "filter", "replace", "dev", "tun0", "ingress",
+        command([IP, "netns", "exec", "cli", "tc", "qdisc", "replace", "dev", "tun0", "clsact"])
+        command([IP, "netns", "exec", "cli", "tc", "filter", "replace", "dev", "tun0", "ingress",
                  "protocol", "all", "pref", "10", "matchall", "action", "mirred",
                  "egress", "redirect", "dev", "ifb0"])
-        command([IP, "-n", "cli", "tc", "qdisc", "replace", "dev", "ifb0", "root",
+        command([IP, "netns", "exec", "cli", "tc", "qdisc", "replace", "dev", "ifb0", "root",
                  "netem", "delay", delay])
 
-        stats = command([IP, "-n", "cli", "tc", "-s", "qdisc", "show", "dev", "tun0"],
+        stats = command([IP, "netns", "exec", "cli", "tc", "-s", "qdisc", "show", "dev", "tun0"],
                         capture=True)
-        ingress = command([IP, "-n", "cli", "tc", "-s", "filter", "show", "dev", "tun0",
+        ingress = command([IP, "netns", "exec", "cli", "tc", "-s", "filter", "show", "dev", "tun0",
                            "ingress"], capture=True)
-        reverse = command([IP, "-n", "cli", "tc", "-s", "qdisc", "show", "dev", "ifb0"],
+        reverse = command([IP, "netns", "exec", "cli", "tc", "-s", "qdisc", "show", "dev", "ifb0"],
                           capture=True)
         (self.artifacts / ("netem-rtt-%dms.txt" % rtt_ms)).write_text(
             "TUN egress qdisc:\n" + stats.stdout +
@@ -311,10 +311,10 @@ class Lab:
     def save_path_stats(self, label):
         sections = []
         for device in ("tun0", "ifb0"):
-            qdisc = command([IP, "-n", "cli", "tc", "-s", "qdisc", "show",
+            qdisc = command([IP, "netns", "exec", "cli", "tc", "-s", "qdisc", "show",
                              "dev", device], check=False, capture=True)
             sections.append("=== qdisc %s ===\n%s\n" % (device, qdisc.stdout))
-        ingress = command([IP, "-n", "cli", "tc", "-s", "filter", "show",
+        ingress = command([IP, "netns", "exec", "cli", "tc", "-s", "filter", "show",
                            "dev", "tun0", "ingress"], check=False, capture=True)
         sections.append("=== tun0 ingress filters ===\n%s\n" % ingress.stdout)
         link_stats = command([IP, "-n", "cli", "-s", "link", "show", "dev", "tun0"],
