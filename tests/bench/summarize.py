@@ -94,7 +94,7 @@ def main():
         "The harness uses 8 rounds per arm/profile; round 1 is discarded as warm-up, leaving 7 measured rounds.",
         "RTT shaping is attached to the tun0 path: netem (32,768-packet queue limit) on TUN egress plus ingress redirection to IFB with the same one-way delay. Configured RTT equals twice the per-side delay.",
         "Every newly measured profile is rejected if qdisc or TUN/IFB netdevice RX/TX drop counters report packet drops.",
-        "TUN and IFB netdevice transmit queues are set to 8,192 packets; this avoids the default 500-packet TUN queue limiting high-concurrency runs.",
+        "TUN and IFB netdevice transmit queues are set to 65,536 packets to keep the virtual TUN read ring from becoming the benchmark bottleneck.",
         "Outer SSH transport uses the veth link without injected delay. The HTTP endpoint is reached through the SSH dynamic SOCKS tunnel.",
         "",
         "## Throughput, CPU, and RSS",

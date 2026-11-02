@@ -35,7 +35,7 @@ CONCURRENCY = (1, 8, 64, 256)
 ROUNDS = 8
 TTFB_SAMPLES = 200
 MEMORY_COUNTS = (16, 64, 256, 512, 1024)
-NETDEV_QUEUE_LENGTH = 8192
+NETDEV_QUEUE_LENGTH = 65536
 
 
 def command(args, timeout=30, check=True, capture=False):
@@ -334,12 +334,9 @@ class Lab:
         wait_port(TARGET_IP, HTTP_PORT, 30)
 
     def apply_rtt(self, rtt_ms):
-        delay = "%gms" % (rtt_ms / 2.0)
-        command([IP, "-n", "cli", "link", "del", "ifb0"], check=False)
         if not rtt_ms:
-            command([IP, "netns", "exec", "cli", "tc", "qdisc", "del", "dev", "tun0", "root"], check=False)
-            command([IP, "netns", "exec", "cli", "tc", "qdisc", "del", "dev", "tun0", "clsact"], check=False)
             return
+        delay = "%gms" % (rtt_ms / 2.0)
 
         command([IP, "-n", "cli", "link", "add", "ifb0", "type", "ifb"])
         command([IP, "-n", "cli", "link", "set", "ifb0", "up"])
@@ -497,7 +494,7 @@ class Lab:
         status = process.returncode
         self.engine = None
         self.engine_arm = None
-        command([IP, "-n", "cli", "link", "del", "ifb0"], check=False)
+        command([IP, "-n", "cli", "link", "del", "ifb0"], check=False, capture=True)
         deadline = time.monotonic() + 10
         while time.monotonic() < deadline:
             probe = subprocess.run(
@@ -992,7 +989,7 @@ class Lab:
                             result_file.flush()
                             print(
                                 "RESUME BENCH arm=%s RTT=%d C=%d round=%d/%d "
-                                "Mbps=%.2f errors=%d qdisc_drops=0"
+                                "Mbps=%.2f errors=%d path_drops=0"
                                 % (arm["label"], rtt, concurrency, round_number + 1,
                                    ROUNDS, result["throughput_mbps"], result["errors"]),
                                 flush=True,
