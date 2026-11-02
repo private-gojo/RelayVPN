@@ -1,0 +1,56 @@
+name: Phase 2a - Dual engine performance baseline
+
+on:
+  push:
+    branches:
+      - phase2a-engine-baseline
+  pull_request:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  engine-baseline:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout RelayVPN
+        uses: actions/checkout@v4
+      - name: Install benchmark tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential cmake iproute2 curl openssh-client openssh-server python3
+      - name: Verify TUN and network namespace support
+        run: |
+          set -euo pipefail
+          sudo modprobe tun || true
+          test -c /dev/net/tun
+          sudo ip netns add rvchk
+          sudo ip netns del rvchk
+          sudo ip link add rvchk type dummy
+          sudo ip link del rvchk
+      - name: Build both engines
+        run: |
+          set -euo pipefail
+          cmake -S . -B "$RUNNER_TEMP/relayvpn-phase2a-build" \
+            -G "Unix Makefiles" \
+            -DBUILD_NOTHING_BY_DEFAULT=ON \
+            -DBUILD_TUN2SOCKS=ON \
+            -DBUILD_UDPGW=ON \
+            -DBUILD_HEV=ON
+          cmake --build "$RUNNER_TEMP/relayvpn-phase2a-build" --parallel 2
+          test -x "$RUNNER_TEMP/relayvpn-phase2a-build/tun2socks/badvpn-tun2socks"
+          test -x third_party/hev-socks5-tunnel/bin/hev-socks5-tunnel
+      - name: Measure both engines under identical TCP workload
+        shell: bash
+        run: bash tests/engine-baseline.sh
+      - name: Upload baseline measurements
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: relayvpn-phase2a-engine-baseline
+          path: phase2a-artifacts/
+          if-no-files-found: warn
