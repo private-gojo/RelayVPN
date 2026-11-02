@@ -22,7 +22,7 @@ IP = shutil.which("ip") or "/usr/sbin/ip"
 CURL = shutil.which("curl") or "/usr/bin/curl"
 SSH = shutil.which("ssh") or "/usr/bin/ssh"
 SSHD = shutil.which("sshd") or "/usr/sbin/sshd"
-USER = "relayvpn-test"
+USER = os.environ.get("SUDO_USER", "")
 HOST_IP = "10.200.0.1"
 CLIENT_IP = "10.200.0.2"
 TARGET_IP = "198.51.100.10"
@@ -176,24 +176,19 @@ class Lab:
         command([IP, "-n", "cli", "link", "set", "veth-cli", "up"])
         command([IP, "addr", "add", TARGET_IP + "/32", "dev", "lo"])
 
-        if subprocess.run(["id", USER], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).returncode != 0:
-            command(["useradd", "--create-home", "--shell", "/bin/bash", USER])
-            self.user_created = True
-        command(["usermod", "--password", "*", USER])
-        home = Path("/home") / USER
-        ssh_dir = home / ".ssh"
+        if not USER or USER == "root":
+            raise RuntimeError("SUDO_USER must identify the non-root Actions runner account")
         account = pwd.getpwnam(USER)
-        ssh_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
-        os.chown(ssh_dir, account.pw_uid, account.pw_gid)
-        os.chmod(ssh_dir, 0o700)
+        if account.pw_uid == 0 or not account.pw_shell:
+            raise RuntimeError("SUDO_USER does not resolve to a valid non-root account")
 
         key = self.work / "id_ed25519"
         if not key.exists():
             command(["ssh-keygen", "-q", "-t", "ed25519", "-N", "", "-f", key])
         public_key = Path(str(key) + ".pub").read_text(encoding="ascii")
-        authorized = ssh_dir / "authorized_keys"
+        authorized = self.work / "authorized_keys"
         authorized.write_text(public_key, encoding="ascii")
-        os.chown(authorized, account.pw_uid, account.pw_gid)
+        os.chown(authorized, 0, 0)
         os.chmod(authorized, 0o600)
         command(["ssh-keygen", "-A"])
 
@@ -203,7 +198,7 @@ class Lab:
             "ListenAddress 127.0.0.1\n"
             "HostKey /etc/ssh/ssh_host_ed25519_key\n"
             "PidFile %s\n"
-            "AuthorizedKeysFile .ssh/authorized_keys\n"
+            "AuthorizedKeysFile %s\n"
             "PasswordAuthentication no\n"
             "KbdInteractiveAuthentication no\n"
             "PubkeyAuthentication yes\n"
@@ -213,7 +208,7 @@ class Lab:
             "PermitOpen any\n"
             "UsePAM no\n"
             "StrictModes yes\n"
-            "LogLevel ERROR\n" % (SSH_PORT, self.work / "sshd.pid", USER),
+            "LogLevel ERROR\n" % (SSH_PORT, self.work / "sshd.pid", authorized, USER),
             encoding="ascii",
         )
         Path("/run/sshd").mkdir(exist_ok=True)
@@ -1099,16 +1094,14 @@ class Lab:
                 stream.close()
             except OSError:
                 pass
-        if self.netns:
-            command([IP, "netns", "del", "cli"], check=False)
-            self.netns = False
         if self.root_link:
-            command([IP, "link", "del", "veth-root"], check=False)
+            command([IP, "link", "del", "veth-root"], check=False, capture=True)
             self.root_link = False
+        if self.netns:
+            command([IP, "netns", "del", "cli"], check=False, capture=True)
+            self.netns = False
         command([IP, "addr", "del", TARGET_IP + "/32", "dev", "lo"], check=False)
-        if self.user_created:
-            command(["userdel", "-r", USER], check=False)
-            self.user_created = False
+
 
 
 def write_system_info(path):
