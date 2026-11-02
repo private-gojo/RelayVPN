@@ -36,7 +36,7 @@ for spec in BASE:b1c51a6 P2B0:0c0ef9d P2B:f0b247e P2C:95fcf20 P2D:523b38b; do
   test -x "$binary"
 
   probe="$build/relayvpn-config-probe"
-  cc -std=gnu99 \
+  cc -std=gnu99 -DBADVPN_LITTLE_ENDIAN -DBADVPN_THREAD_SAFE=1 \
     -I"$tree" \
     -I"$tree/lwip/custom" \
     -I"$tree/lwip/src/include" \
