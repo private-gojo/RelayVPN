@@ -104,6 +104,7 @@ class Lab:
         self.netns = False
         self.root_link = False
         self.user_created = False
+        self.ssh_key_dir = None
         self.large_hashes = {}
 
     def log_path(self, name):
@@ -186,8 +187,10 @@ class Lab:
         if not key.exists():
             command(["ssh-keygen", "-q", "-t", "ed25519", "-N", "", "-f", key])
         public_key = Path(str(key) + ".pub").read_text(encoding="ascii")
+        Path("/run/sshd").mkdir(mode=0o755, parents=True, exist_ok=True)
         ssh_key_dir = Path("/run/sshd") / ("phase2e-%d" % os.getpid())
         ssh_key_dir.mkdir(mode=0o755, parents=False, exist_ok=False)
+        self.ssh_key_dir = ssh_key_dir
         os.chown(ssh_key_dir, 0, 0)
         os.chmod(ssh_key_dir, 0o755)
         authorized = ssh_key_dir / "authorized_keys"
@@ -197,7 +200,6 @@ class Lab:
         command(["ssh-keygen", "-A"])
         command(["sudo", "-u", USER, "test", "-r", authorized])
         command(["ssh-keygen", "-lf", str(authorized)])
-        command(["sshd", "-t", "-f", str(self.work / "sshd_config")]) if False else None
 
         sshd_config = self.work / "sshd_config"
         sshd_config.write_text(
@@ -1108,6 +1110,9 @@ class Lab:
             command([IP, "netns", "del", "cli"], check=False, capture=True)
             self.netns = False
         command([IP, "addr", "del", TARGET_IP + "/32", "dev", "lo"], check=False)
+        if self.ssh_key_dir is not None:
+            shutil.rmtree(self.ssh_key_dir, ignore_errors=True)
+            self.ssh_key_dir = None
 
 
 
