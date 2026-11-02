@@ -56,6 +56,10 @@ jobs:
           sudo --preserve-env=GITHUB_WORKSPACE,RUNNER_TEMP \
             bash tests/bench/build-and-measure.sh
 
+      - name: Make root-generated logs readable
+        if: always()
+        run: sudo chmod -R a+rX phase2e-artifacts/ 2>/dev/null || true
+
       - name: Upload measurement gate artifacts
         if: always()
         uses: actions/upload-artifact@v4
