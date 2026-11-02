@@ -13,6 +13,131 @@ def read_csv(path):
         return list(csv.DictReader(source))
 
 
+def validate_artifacts(artifact_dir, arms):
+    errors = []
+    expected_rounds = set(range(1, 9))
+    expected_rtts = (0, 10, 25, 50)
+    expected_concurrency = (1, 8, 64, 256)
+
+    results = read_csv(artifact_dir / "results.csv")
+    result_groups = defaultdict(list)
+    for row in results:
+        try:
+            key = (row["arm"], int(row["rtt_ms"]), int(row["concurrency"]))
+        except (KeyError, TypeError, ValueError):
+            errors.append("results.csv contains a malformed profile key")
+            continue
+        result_groups[key].append(row)
+
+    for arm in arms:
+        label = arm["label"]
+        expected_sha = arm["sha"].lower()
+        for rtt in expected_rtts:
+            for concurrency in expected_concurrency:
+                key = (label, rtt, concurrency)
+                rows = result_groups.get(key, [])
+                rounds = set()
+                if len(rows) != len(expected_rounds):
+                    errors.append("%s RTT=%d C=%d: expected 8 rows, found %d" %
+                                  (label, rtt, concurrency, len(rows)))
+                for row in rows:
+                    try:
+                        round_number = int(row["round"])
+                        warmup = row["warmup"]
+                        row_errors = int(row["errors"])
+                    except (KeyError, TypeError, ValueError):
+                        errors.append("%s RTT=%d C=%d: malformed result row" % key)
+                        continue
+                    if round_number in rounds:
+                        errors.append("%s RTT=%d C=%d: duplicate round %d" %
+                                      (label, rtt, concurrency, round_number))
+                    rounds.add(round_number)
+                    if row.get("commit", "").lower() != expected_sha:
+                        errors.append("%s RTT=%d C=%d round=%d: commit SHA mismatch" %
+                                      (label, rtt, concurrency, round_number))
+                    expected_warmup = "1" if round_number == 1 else "0"
+                    if warmup != expected_warmup:
+                        errors.append("%s RTT=%d C=%d round=%d: incorrect warmup marker" %
+                                      (label, rtt, concurrency, round_number))
+                    if row_errors:
+                        errors.append("%s RTT=%d C=%d round=%d: %d transfer errors" %
+                                      (label, rtt, concurrency, round_number, row_errors))
+                if rounds != expected_rounds:
+                    errors.append("%s RTT=%d C=%d: rounds must be exactly 1..8" % key)
+
+    ttfb_groups = defaultdict(list)
+    for row in ttfb_rows:
+        try:
+            key = (row["arm"], int(row["rtt_ms"]), row["mode"])
+        except (KeyError, TypeError, ValueError):
+            errors.append("ttfb.csv contains a malformed profile key")
+            continue
+        ttfb_groups[key].append(row)
+
+    for arm in arms:
+        label = arm["label"]
+        expected_sha = arm["sha"].lower()
+        for rtt in expected_rtts:
+            for mode in ("idle", "loaded"):
+                key = (label, rtt, mode)
+                rows = ttfb_groups.get(key, [])
+                samples = set()
+                if len(rows) != 200:
+                    errors.append("%s RTT=%d %s: expected 200 TTFB rows, found %d" %
+                                  (label, rtt, mode, len(rows)))
+                for row in rows:
+                    try:
+                        sample = int(row["sample"])
+                        row_errors = int(row["errors"])
+                        value = float(row["time_starttransfer_ms"])
+                    except (KeyError, TypeError, ValueError):
+                        errors.append("%s RTT=%d %s: malformed TTFB row" % key)
+                        continue
+                    if sample in samples:
+                        errors.append("%s RTT=%d %s: duplicate sample %d" %
+                                      (label, rtt, mode, sample))
+                    samples.add(sample)
+                    if row.get("commit", "").lower() != expected_sha:
+                        errors.append("%s RTT=%d %s sample=%d: commit SHA mismatch" %
+                                      (label, rtt, mode, sample))
+                    if row_errors or not math.isfinite(value) or value < 0:
+                        errors.append("%s RTT=%d %s sample=%d: invalid/error sample" %
+                                      (label, rtt, mode, sample))
+                if samples != set(range(1, 201)):
+                    errors.append("%s RTT=%d %s: samples must be exactly 1..200" % key)
+
+    memory_rows = read_csv(artifact_dir / "memory.csv")
+    memory_groups = defaultdict(list)
+    for row in memory_rows:
+        try:
+            key = (row["arm"], row["mode"], int(row["requested"]))
+            connected = int(row["connected"])
+            client_errors = int(row["client_errors"])
+        except (KeyError, TypeError, ValueError):
+            errors.append("memory.csv contains a malformed measurement row")
+            continue
+        if connected < 0 or connected > key[2] or client_errors < 0:
+            errors.append("%s %s N=%d: invalid connection counters" % key)
+        memory_groups[key].append(row)
+
+    badvpn_arms = [arm for arm in arms if arm["kind"] == "badvpn"]
+    for arm in badvpn_arms:
+        label = arm["label"]
+        expected = {(mode, count) for count in (16, 64, 256, 512, 1024)
+                    for mode in ("idle", "stalled")}
+        expected.add(("idle", 1100))
+        for mode, count in expected:
+            rows = memory_groups.get((label, mode, count), [])
+            if len(rows) != 1:
+                errors.append("%s %s N=%d: expected exactly one memory record, found %d" %
+                              (label, mode, count, len(rows)))
+    if errors:
+        preview = "\\n".join("- " + item for item in errors[:40])
+        suffix = "\\n- ... %d additional validation errors" % (len(errors) - 40) if len(errors) > 40 else ""
+        raise ValueError("INCOMPLETE OR INVALID MEASUREMENT ARTIFACTS:\\n" + preview + suffix)
+    return results, ttfb_rows, memory_rows
+
+
 def number(row, key):
     try:
         value = float(row.get(key, ""))
@@ -73,7 +198,7 @@ def main():
     order = [arm["label"] for arm in badvpn_arms]
     by_label = {arm["label"]: arm for arm in arms}
 
-    results = read_csv(artifact_dir / "results.csv")
+    results, ttfb_rows, memory_rows = validate_artifacts(artifact_dir, arms)
     measured = [row for row in results if row["warmup"] == "0"]
     grouped = defaultdict(list)
     all_grouped = defaultdict(list)
@@ -98,7 +223,7 @@ def main():
     lines = [
         "# Phase 2e measurement report",
         "",
-        "Status: report-only; no performance threshold is enforced.",
+        "Status: COMPLETE — artifact structure, per-arm commit identity, rounds, TTFB samples, and memory records validated. Report-only; no performance threshold is enforced.",
         "",
         "## Runner and method",
         "",
@@ -256,7 +381,6 @@ def main():
         "| Arm | Mode | Requested | Connected | Struct bytes | Array ceiling B/conn | Peak Δ B/conn | HWM Δ B/conn | Post Δ B/conn |",
         "|---|---|---:|---:|---:|---:|---:|---:|---:|",
     ])
-    memory_rows = read_csv(artifact_dir / "memory.csv")
     for row in memory_rows:
         arm = by_label[row["arm"]]
         array_ceiling = int(arm.get("tcp_wnd", 0)) + int(arm.get("socks_recv_buf", 0))
