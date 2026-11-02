@@ -92,7 +92,8 @@ def main():
         "",
         "See system-info.txt for kernel, OS image, CPU model, and logical CPU count.",
         "The harness uses 8 rounds per arm/profile; round 1 is discarded as warm-up, leaving 7 measured rounds.",
-        "RTT shaping is attached to the tun0 path: netem on TUN egress plus ingress redirection to IFB with the same one-way delay. Configured RTT equals twice the per-side delay.",
+        "RTT shaping is attached to the tun0 path: netem (32,768-packet queue limit) on TUN egress plus ingress redirection to IFB with the same one-way delay. Configured RTT equals twice the per-side delay.",
+        "Every newly measured profile is rejected if either shaped qdisc reports packet drops.",
         "Outer SSH transport uses the veth link without injected delay. The HTTP endpoint is reached through the SSH dynamic SOCKS tunnel.",
         "",
         "## Throughput, CPU, and RSS",
@@ -100,6 +101,25 @@ def main():
         "| RTT | Flows | Arm | Median Mbps | p25–p75 | Min–max | CV | CPU s/GiB | RSS KiB | HWM KiB | Errors |",
         "|---:|---:|---|---:|---:|---:|---:|---:|---:|---:|---:|",
     ]
+
+    resume_plan_path = artifact_dir / "resume-plan.json"
+    if resume_plan_path.is_file():
+        resume_plan = json.loads(resume_plan_path.read_text(encoding="utf-8"))
+        lines.extend([
+            "",
+            "## Measurement integrity and resume",
+            "",
+            "Source workflow run: %s." % resume_plan["source_run_id"],
+            "Complete throughput profiles reused: %d; targeted profiles rerun: %d."
+            % (len(resume_plan["reused_profiles"]), len(resume_plan["rerun_profiles"])),
+            "TTFB arm/RTT profiles reused: %d; rerun: %d."
+            % (len(resume_plan["reused_ttfb_profiles"]), len(resume_plan["rerun_ttfb_profiles"])),
+        ])
+        if resume_plan["rerun_profiles"]:
+            lines.append("Rerun throughput profiles: " + ", ".join(resume_plan["rerun_profiles"]) + ".")
+        if resume_plan["rerun_ttfb_profiles"]:
+            lines.append("Rerun TTFB profiles: " + ", ".join(resume_plan["rerun_ttfb_profiles"]) + ".")
+        lines.append("source-system-info.txt records the runner used for retained measurements; system-info.txt records the runner used for reruns, calibration, and memory tests.")
 
     profile_stats = {}
     for rtt in (0, 10, 25, 50):

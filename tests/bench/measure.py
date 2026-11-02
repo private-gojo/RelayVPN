@@ -7,8 +7,10 @@ import math
 import os
 import pwd
 import random
+import re
 import shutil
 import signal
+from collections import defaultdict
 import socket
 import subprocess
 import sys
@@ -211,7 +213,7 @@ class Lab:
             "PermitOpen any\n"
             "UsePAM no\n"
             "StrictModes yes\n"
-            "LogLevel DEBUG1\n" % (SSH_PORT, self.work / "sshd.pid", USER),
+            "LogLevel ERROR\n" % (SSH_PORT, self.work / "sshd.pid", USER),
             encoding="ascii",
         )
         Path("/run/sshd").mkdir(exist_ok=True)
@@ -245,7 +247,6 @@ class Lab:
                 "-o", "ServerAliveInterval=15",
                 "-o", "ServerAliveCountMax=3",
                 "-o", "Compression=no",
-                "-vv",
                 USER + "@127.0.0.1",
             ],
             self.log_path("ssh-client.log"),
@@ -299,13 +300,13 @@ class Lab:
         command([IP, "-n", "cli", "link", "add", "ifb0", "type", "ifb"])
         command([IP, "-n", "cli", "link", "set", "ifb0", "up"])
         command([IP, "netns", "exec", "cli", "tc", "qdisc", "replace", "dev", "tun0", "root",
-                 "netem", "delay", delay])
+                 "netem", "limit", "32768", "delay", delay])
         command([IP, "netns", "exec", "cli", "tc", "qdisc", "replace", "dev", "tun0", "clsact"])
         command([IP, "netns", "exec", "cli", "tc", "filter", "replace", "dev", "tun0", "ingress",
                  "protocol", "all", "pref", "10", "matchall", "action", "mirred",
                  "egress", "redirect", "dev", "ifb0"])
         command([IP, "netns", "exec", "cli", "tc", "qdisc", "replace", "dev", "ifb0", "root",
-                 "netem", "delay", delay])
+                 "netem", "limit", "32768", "delay", delay])
 
         stats = command([IP, "netns", "exec", "cli", "tc", "-s", "qdisc", "show", "dev", "tun0"],
                         capture=True)
@@ -333,10 +334,22 @@ class Lab:
                              check=False, capture=True)
         sections.append("=== tun0 link stats ===\n%s\n" % link_stats.stdout)
         safe_label = label.replace("/", "_")
-        (self.artifacts / ("path-stats-%s.txt" % safe_label)).write_text(
-            "\n".join(sections), encoding="utf-8"
-        )
+        path = self.artifacts / ("path-stats-%s.txt" % safe_label)
+        path.write_text("\n".join(sections), encoding="utf-8")
+        return self.count_qdisc_drops(path.read_text(encoding="utf-8"))
 
+    @staticmethod
+    def count_qdisc_drops(text):
+        qdisc_sections = re.findall(
+            r"=== qdisc [^=]+ ===\s*(.*?)(?=\n===|\Z)", text, re.DOTALL
+        )
+        if not qdisc_sections:
+            return None
+        return sum(
+            int(value)
+            for section in qdisc_sections
+            for value in re.findall(r"\bdropped\s+(\d+)", section)
+        )
 
     def start_engine(self, arm):
         if self.engine is not None:
@@ -551,6 +564,15 @@ class Lab:
                     for _ in range(8)
                 ]
             values, errors = self.ttfb_samples(mode, arm, rtt)
+            for process in background:
+                try:
+                    status = process.wait(timeout=240)
+                    if status != 0:
+                        errors += 1
+                except subprocess.TimeoutExpired:
+                    process.kill()
+                    process.wait()
+                    errors += 1
             for index, value in enumerate(values, 1):
                 ttfb_writer.writerow({
                     "arm": arm["label"],
@@ -561,15 +583,6 @@ class Lab:
                     "time_starttransfer_ms": "%.6f" % value,
                     "errors": errors,
                 })
-            for process in background:
-                try:
-                    status = process.wait(timeout=240)
-                    if status != 0:
-                        errors += 1
-                except subprocess.TimeoutExpired:
-                    process.kill()
-                    process.wait()
-                    errors += 1
             print("TTFB %s RTT=%d mode=%s valid=%d/%d errors=%d" % (
                 arm["label"], rtt, mode, len(values), TTFB_SAMPLES, errors
             ), flush=True)
@@ -669,6 +682,241 @@ class Lab:
                                 self.stop_engine()
 
         self.run_calibration(by_label["P2D"])
+
+
+    def run_resumed_benchmark(self, source_dir, source_run_id):
+        source = Path(source_dir)
+        previous_results = source / "results.csv"
+        previous_ttfb = source / "ttfb.csv"
+        if not previous_results.is_file() or not previous_ttfb.is_file():
+            raise RuntimeError("resume source is missing results.csv or ttfb.csv")
+
+        def read_rows(path):
+            with path.open(newline="", encoding="utf-8") as handle:
+                return list(csv.DictReader(handle))
+
+        old_results = read_rows(previous_results)
+        old_ttfb = read_rows(previous_ttfb)
+        arms = self.manifest["arms"]
+        expected_rounds = set(range(1, ROUNDS + 1))
+        result_groups = defaultdict(list)
+        for row in old_results:
+            result_groups[(int(row["rtt_ms"]), int(row["concurrency"]))].append(row)
+
+        reusable_profiles = []
+        rerun_profiles = []
+        kept_results = []
+        preserved_stats = set()
+
+        for rtt in RTT_PROFILES:
+            for concurrency in CONCURRENCY:
+                rows = result_groups.get((rtt, concurrency), [])
+                by_arm = defaultdict(list)
+                for row in rows:
+                    by_arm[row["arm"]].append(row)
+
+                valid = len(rows) == len(arms) * ROUNDS
+                for arm in arms:
+                    arm_rows = by_arm.get(arm["label"], [])
+                    rounds = {int(row["round"]) for row in arm_rows}
+                    if rounds != expected_rounds or len(arm_rows) != ROUNDS:
+                        valid = False
+                    if any(int(row["errors"]) != 0 for row in arm_rows):
+                        valid = False
+                    for round_number in expected_rounds:
+                        stat_name = (
+                            "path-stats-%s-rtt%d-c%d-round%d.txt"
+                            % (arm["label"], rtt, concurrency, round_number)
+                        )
+                        stat_path = source / stat_name
+                        drops = (
+                            self.count_qdisc_drops(stat_path.read_text(encoding="utf-8"))
+                            if stat_path.is_file() else None
+                        )
+                        if drops is None or drops > 0:
+                            valid = False
+
+                if valid:
+                    reusable_profiles.append("RTT=%d C=%d" % (rtt, concurrency))
+                    kept_results.extend(rows)
+                    for arm in arms:
+                        for round_number in expected_rounds:
+                            preserved_stats.add(
+                                "path-stats-%s-rtt%d-c%d-round%d.txt"
+                                % (arm["label"], rtt, concurrency, round_number)
+                            )
+                else:
+                    rerun_profiles.append((rtt, concurrency))
+
+        old_ttfb_groups = defaultdict(list)
+        for row in old_ttfb:
+            old_ttfb_groups[(row["arm"], int(row["rtt_ms"]), row["mode"])].append(row)
+
+        kept_ttfb = []
+        rerun_ttfb = []
+        reused_ttfb_profiles = []
+        for arm in arms:
+            for rtt in RTT_PROFILES:
+                stat_name = "path-stats-%s-rtt%d-ttfb.txt" % (arm["label"], rtt)
+                stat_path = source / stat_name
+                drops = (
+                    self.count_qdisc_drops(stat_path.read_text(encoding="utf-8"))
+                    if stat_path.is_file() else None
+                )
+                valid = drops == 0
+                cell_rows = []
+                for mode in ("idle", "loaded"):
+                    group = old_ttfb_groups.get((arm["label"], rtt, mode), [])
+                    samples = {int(row["sample"]) for row in group}
+                    if len(group) != TTFB_SAMPLES or samples != set(range(1, TTFB_SAMPLES + 1)):
+                        valid = False
+                    if any(int(row["errors"]) != 0 for row in group):
+                        valid = False
+                    cell_rows.extend(group)
+                if valid:
+                    kept_ttfb.extend(cell_rows)
+                    preserved_stats.add(stat_name)
+                    reused_ttfb_profiles.append("%s RTT=%d" % (arm["label"], rtt))
+                else:
+                    rerun_ttfb.append((arm, rtt))
+
+        for name in preserved_stats:
+            source_path = source / name
+            if source_path.is_file():
+                shutil.copy2(source_path, self.artifacts / name)
+        source_system_info = source / "system-info.txt"
+        if source_system_info.is_file():
+            shutil.copy2(source_system_info, self.artifacts / "source-system-info.txt")
+
+        plan = {
+            "source_run_id": str(source_run_id),
+            "source_artifact": "relayvpn-phase2e-measurement-gate",
+            "reused_profiles": reusable_profiles,
+            "rerun_profiles": [
+                "RTT=%d C=%d" % profile for profile in rerun_profiles
+            ],
+            "reused_ttfb_profiles": reused_ttfb_profiles,
+            "rerun_ttfb_profiles": [
+                "%s RTT=%d" % (arm["label"], rtt) for arm, rtt in rerun_ttfb
+            ],
+            "expected_rounds_per_arm_profile": ROUNDS,
+            "expected_ttfb_samples_per_mode": TTFB_SAMPLES,
+        }
+        (self.artifacts / "resume-plan.json").write_text(
+            json.dumps(plan, indent=2) + "\n", encoding="utf-8"
+        )
+
+        result_fields = [
+            "arm", "commit", "rtt_ms", "concurrency", "round", "warmup",
+            "bytes", "elapsed_ms", "throughput_mbps", "cpu_seconds",
+            "cpu_seconds_per_gib", "rss_kib", "hwm_kib", "errors",
+            "engine_exit_status", "error_samples",
+        ]
+        ttfb_fields = [
+            "arm", "commit", "rtt_ms", "mode", "sample",
+            "time_starttransfer_ms", "errors",
+        ]
+        rows_path = self.artifacts / "results.csv"
+        ttfb_path = self.artifacts / "ttfb.csv"
+        with rows_path.open("w", newline="", encoding="utf-8") as result_file, \\
+             ttfb_path.open("w", newline="", encoding="utf-8") as ttfb_file:
+            writer = csv.DictWriter(result_file, fieldnames=result_fields)
+            ttfb_writer = csv.DictWriter(ttfb_file, fieldnames=ttfb_fields)
+            writer.writeheader()
+            ttfb_writer.writeheader()
+            writer.writerows(kept_results)
+            ttfb_writer.writerows(kept_ttfb)
+            result_file.flush()
+            ttfb_file.flush()
+
+            for arm, rtt in rerun_ttfb:
+                self.start_engine(arm)
+                try:
+                    self.apply_rtt(rtt)
+                    self.run_ttfb_profile(arm, rtt, ttfb_writer)
+                    drops = self.save_path_stats(
+                        "%s-rtt%d-ttfb" % (arm["label"], rtt)
+                    )
+                    if drops is None or drops > 0:
+                        raise RuntimeError(
+                            "invalid TTFB path: %s RTT=%d qdisc_drops=%s"
+                            % (arm["label"], rtt, drops)
+                        )
+                    ttfb_file.flush()
+                finally:
+                    self.stop_engine()
+
+            for rtt, concurrency in rerun_profiles:
+                path = "large.bin" if concurrency == 1 else "large10.bin"
+                for round_number in range(ROUNDS):
+                    rotation = round_number % len(arms)
+                    order = arms[rotation:] + arms[:rotation]
+                    for arm in order:
+                        self.start_engine(arm)
+                        try:
+                            self.apply_rtt(rtt)
+                            self.check_engine()
+                            pid = self.engine.pid
+                            reset_peak_rss(pid)
+                            before_cpu = proc_cpu_ticks(pid)
+                            result = self.run_parallel_downloads(concurrency, path)
+                            self.check_engine()
+                            drops = self.save_path_stats(
+                                "%s-rtt%d-c%d-round%d"
+                                % (arm["label"], rtt, concurrency, round_number + 1)
+                            )
+                            if drops is None or drops > 0:
+                                raise RuntimeError(
+                                    "invalid emulator path: arm=%s RTT=%d C=%d "
+                                    "round=%d qdisc_drops=%s"
+                                    % (arm["label"], rtt, concurrency,
+                                       round_number + 1, drops)
+                                )
+                            after_cpu = proc_cpu_ticks(pid)
+                            status = proc_status(pid)
+                            cpu_seconds = (
+                                (after_cpu - before_cpu)
+                                / float(os.sysconf("SC_CLK_TCK"))
+                            )
+                            cpu_per_gib = (
+                                cpu_seconds / (result["bytes"] / float(1024 ** 3))
+                                if result["bytes"] else 0.0
+                            )
+                            writer.writerow({
+                                "arm": arm["label"],
+                                "commit": arm["sha"],
+                                "rtt_ms": rtt,
+                                "concurrency": concurrency,
+                                "round": round_number + 1,
+                                "warmup": int(round_number == 0),
+                                "bytes": result["bytes"],
+                                "elapsed_ms": "%.3f" % result["elapsed_ms"],
+                                "throughput_mbps": "%.6f" % result["throughput_mbps"],
+                                "cpu_seconds": "%.6f" % cpu_seconds,
+                                "cpu_seconds_per_gib": "%.6f" % cpu_per_gib,
+                                "rss_kib": status.get("VmRSS", 0),
+                                "hwm_kib": status.get("VmHWM", 0),
+                                "errors": result["errors"],
+                                "engine_exit_status": "",
+                                "error_samples": " | ".join(result["error_samples"]),
+                            })
+                            result_file.flush()
+                            print(
+                                "RESUME BENCH arm=%s RTT=%d C=%d round=%d/%d "
+                                "Mbps=%.2f errors=%d qdisc_drops=0"
+                                % (arm["label"], rtt, concurrency, round_number + 1,
+                                   ROUNDS, result["throughput_mbps"], result["errors"]),
+                                flush=True,
+                            )
+                        finally:
+                            self.stop_engine()
+
+        print(
+            "RESUME PLAN reused=%d rerun=%d TTFB-reused=%d TTFB-rerun=%d"
+            % (len(reusable_profiles), len(rerun_profiles),
+               len(reused_ttfb_profiles), len(rerun_ttfb)),
+            flush=True,
+        )
 
     def run_calibration(self, arm):
         path = "large.bin"
@@ -885,7 +1133,9 @@ def main():
     parser.add_argument("--manifest", required=True)
     parser.add_argument("--work-dir", required=True)
     parser.add_argument("--artifact-dir", required=True)
-    parser.add_argument("--mode", choices=("benchmark", "memory", "all"), default="all")
+    parser.add_argument("--mode", choices=("benchmark", "memory", "all", "resume"), default="all")
+    parser.add_argument("--resume-from")
+    parser.add_argument("--source-run-id", default="unknown")
     args = parser.parse_args()
 
     manifest = json.loads(Path(args.manifest).read_text(encoding="utf-8"))
@@ -895,10 +1145,18 @@ def main():
     lab = Lab(args.work_dir, args.artifact_dir, manifest)
     try:
         lab.setup()
-        if args.mode in ("benchmark", "all"):
-            lab.run_benchmark()
-        if args.mode in ("memory", "all"):
+        if args.mode == "resume":
+            if not args.resume_from:
+                raise RuntimeError("--resume-from is required with --mode resume")
+            lab.run_resumed_benchmark(args.resume_from, args.source_run_id)
+            by_label = {arm["label"]: arm for arm in manifest["arms"]}
+            lab.run_calibration(by_label["P2D"])
             lab.run_memory()
+        else:
+            if args.mode in ("benchmark", "all"):
+                lab.run_benchmark()
+            if args.mode in ("memory", "all"):
+                lab.run_memory()
     finally:
         lab.cleanup()
 

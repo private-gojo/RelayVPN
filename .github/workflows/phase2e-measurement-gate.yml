@@ -5,26 +5,40 @@ on:
     branches:
       - phase2e/measurement-gate
   workflow_dispatch:
-  schedule:
-    - cron: "17 19 * * *"
+    inputs:
+      source_run_id:
+        description: Workflow run containing the partial WP1 measurements
+        required: true
+        default: "41413981032"
 
 permissions:
+  actions: read
   contents: read
 
 concurrency:
   group: phase2e-bench-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 jobs:
   phase2e-benchmark:
-    name: Historical throughput and memory comparison
+    name: Targeted recovery, calibration, and memory comparison
     runs-on: ubuntu-latest
     timeout-minutes: 360
+    env:
+      PHASE2E_SOURCE_RUN_ID: ${{ github.event.inputs.source_run_id || '41413981032' }}
     steps:
       - name: Checkout full history
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
+
+      - name: Download previous partial measurements
+        uses: actions/download-artifact@v4
+        with:
+          name: relayvpn-phase2e-measurement-gate
+          run-id: ${{ github.event.inputs.source_run_id || '41413981032' }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          path: phase2e-previous
 
       - name: Install benchmark dependencies
         run: |
@@ -49,22 +63,22 @@ jobs:
             tests/bench/measure.py \
             tests/bench/summarize.py
 
-      - name: Build historical revisions and run WP1/WP2
+      - name: Build historical revisions and run targeted WP1 recovery plus WP2
         shell: bash
         run: |
           set -euo pipefail
-          sudo --preserve-env=GITHUB_WORKSPACE,RUNNER_TEMP \
+          sudo --preserve-env=GITHUB_WORKSPACE,RUNNER_TEMP,PHASE2E_SOURCE_RUN_ID \
             bash tests/bench/build-and-measure.sh
 
       - name: Make root-generated logs readable
         if: always()
         run: sudo chmod -R a+rX phase2e-artifacts/ 2>/dev/null || true
 
-      - name: Upload measurement gate artifacts
+      - name: Upload recovered measurement gate artifacts
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: relayvpn-phase2e-measurement-gate
+          name: relayvpn-phase2e-recovered
           path: phase2e-artifacts/
           if-no-files-found: warn
           retention-days: 30
