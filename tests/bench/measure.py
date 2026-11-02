@@ -309,6 +309,24 @@ class Lab:
             encoding="utf-8",
         )
 
+    def save_path_stats(self, label):
+        sections = []
+        for device in ("tun0", "ifb0"):
+            qdisc = command([IP, "-n", "cli", "tc", "-s", "qdisc", "show",
+                             "dev", device], check=False, capture=True)
+            sections.append("=== qdisc %s ===\n%s\n" % (device, qdisc.stdout))
+        ingress = command([IP, "-n", "cli", "tc", "-s", "filter", "show",
+                           "dev", "tun0", "ingress"], check=False, capture=True)
+        sections.append("=== tun0 ingress filters ===\n%s\n" % ingress.stdout)
+        link_stats = command([IP, "-n", "cli", "-s", "link", "show", "dev", "tun0"],
+                             check=False, capture=True)
+        sections.append("=== tun0 link stats ===\n%s\n" % link_stats.stdout)
+        safe_label = label.replace("/", "_")
+        (self.artifacts / ("path-stats-%s.txt" % safe_label)).write_text(
+            "\n".join(sections), encoding="utf-8"
+        )
+
+
     def start_engine(self, arm):
         if self.engine is not None:
             raise RuntimeError("attempted to start an engine while another engine is active")
@@ -573,6 +591,7 @@ class Lab:
                     try:
                         self.apply_rtt(rtt)
                         self.run_ttfb_profile(arm, rtt, ttfb_writer)
+                        self.save_path_stats("%s-rtt%d-ttfb" % (arm["label"], rtt))
                     finally:
                         self.stop_engine()
                     ttfb_file.flush()
@@ -593,6 +612,9 @@ class Lab:
                                 before_cpu = proc_cpu_ticks(pid)
                                 result = self.run_parallel_downloads(concurrency, path)
                                 self.check_engine()
+                                self.save_path_stats("%s-rtt%d-c%d-round%d" % (
+                                    arm["label"], rtt, concurrency, round_number + 1
+                                ))
                                 after_cpu = proc_cpu_ticks(pid)
                                 after_status = proc_status(pid)
                                 cpu_seconds = (
@@ -722,7 +744,7 @@ class Lab:
         ready_record = None
         samples = []
         try:
-            ready_record = self.read_client_ready(process, timeout=90)
+            ready_record = self.read_client_ready(process, timeout=180)
             while process.poll() is None:
                 try:
                     status = proc_status(pid)
@@ -777,7 +799,6 @@ class Lab:
             ),
             "first_errors": json.dumps(ready_record.get("first_errors", [])) if ready_record else "[]",
         })
-        writer.writerow
         print("MEMORY arm=%s mode=%s requested=%d connected=%d peak_delta=%d KiB" % (
             arm["label"], mode, count, ready_count, extra_peak
         ), flush=True)
