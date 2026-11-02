@@ -67,6 +67,7 @@
 #define TCP_WND 131072
 #define TCP_SND_BUF 131072
 #define TCP_SND_QUEUELEN (4 * (TCP_SND_BUF) / (TCP_MSS))
+#define TCP_SNDLOWAT 32768
 
 #if TCP_WND > 65535 && !LWIP_WND_SCALE
 #error "TCP window scaling is required for receive windows larger than 65535 bytes"

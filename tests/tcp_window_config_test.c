@@ -19,6 +19,10 @@
 #error "Unexpected TCP send buffer"
 #endif
 
+#if TCP_SNDLOWAT != 32768
+#error "Unexpected TCP send low-water mark"
+#endif
+
 #if CLIENT_SOCKS_RECV_BUF_SIZE != TCP_SND_BUF
 #error "SOCKS-to-TCP ring capacity must match TCP_SND_BUF"
 #endif
