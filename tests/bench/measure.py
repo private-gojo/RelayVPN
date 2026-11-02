@@ -186,11 +186,18 @@ class Lab:
         if not key.exists():
             command(["ssh-keygen", "-q", "-t", "ed25519", "-N", "", "-f", key])
         public_key = Path(str(key) + ".pub").read_text(encoding="ascii")
-        authorized = self.work / "authorized_keys"
+        ssh_key_dir = Path("/run/sshd") / ("phase2e-%d" % os.getpid())
+        ssh_key_dir.mkdir(mode=0o755, parents=False, exist_ok=False)
+        os.chown(ssh_key_dir, 0, 0)
+        os.chmod(ssh_key_dir, 0o755)
+        authorized = ssh_key_dir / "authorized_keys"
         authorized.write_text(public_key, encoding="ascii")
-        os.chown(authorized, 0, 0)
+        os.chown(authorized, account.pw_uid, account.pw_gid)
         os.chmod(authorized, 0o600)
         command(["ssh-keygen", "-A"])
+        command(["sudo", "-u", USER, "test", "-r", authorized])
+        command(["ssh-keygen", "-lf", str(authorized)])
+        command(["sshd", "-t", "-f", str(self.work / "sshd_config")]) if False else None
 
         sshd_config = self.work / "sshd_config"
         sshd_config.write_text(
@@ -208,10 +215,10 @@ class Lab:
             "PermitOpen any\n"
             "UsePAM no\n"
             "StrictModes yes\n"
-            "LogLevel ERROR\n" % (SSH_PORT, self.work / "sshd.pid", authorized, USER),
+            "LogLevel INFO\n" % (SSH_PORT, self.work / "sshd.pid", authorized, USER),
             encoding="ascii",
         )
-        Path("/run/sshd").mkdir(exist_ok=True)
+        command([SSHD, "-t", "-f", sshd_config])
         self.sshd = self.start_process(
             [SSHD, "-D", "-f", sshd_config, "-E", self.log_path("sshd.log")],
             self.log_path("sshd-process.log"),
