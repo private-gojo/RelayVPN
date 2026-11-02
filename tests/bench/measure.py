@@ -198,7 +198,7 @@ class Lab:
         sshd_config = self.work / "sshd_config"
         sshd_config.write_text(
             "Port %d\n"
-            "ListenAddress %s\n"
+            "ListenAddress 127.0.0.1\n"
             "HostKey /etc/ssh/ssh_host_ed25519_key\n"
             "PidFile %s\n"
             "AuthorizedKeysFile .ssh/authorized_keys\n"
@@ -219,7 +219,7 @@ class Lab:
             [SSHD, "-D", "-f", sshd_config, "-E", self.log_path("sshd.log")],
             self.log_path("sshd-process.log"),
         )
-        wait_port(HOST_IP, SSH_PORT, 30)
+        wait_port("127.0.0.1", SSH_PORT, 30)
 
         known_hosts = self.work / "known_hosts"
         keyscan = command(
@@ -368,7 +368,7 @@ class Lab:
                 "  log-file: stderr\n"
                 "  log-level: warn\n"
                 "  connect-timeout: 15000\n"
-                "  tcp-read-write-timeout: 120000\n" % SOCKS_PORT,
+                "  tcp-read-write-timeout: 120000\n" % (HOST_IP, SOCKS_PORT),
                 encoding="ascii",
             )
             args = [IP, "netns", "exec", "cli", arm["binary"], config]
