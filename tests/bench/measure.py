@@ -278,15 +278,36 @@ class Lab:
         wait_port(TARGET_IP, HTTP_PORT, 30)
 
     def apply_rtt(self, rtt_ms):
-        one_way = rtt_ms / 2.0
+        delay = "%gms" % (rtt_ms / 2.0)
+        command([IP, "-n", "cli", "link", "del", "ifb0"], check=False)
         if not rtt_ms:
-            command(["tc", "qdisc", "del", "dev", "veth-root", "root"], check=False)
-            command([IP, "netns", "exec", "cli", "tc", "qdisc", "del", "dev", "veth-cli", "root"], check=False)
+            command([IP, "-n", "cli", "tc", "qdisc", "del", "dev", "tun0", "root"], check=False)
+            command([IP, "-n", "cli", "tc", "qdisc", "del", "dev", "tun0", "clsact"], check=False)
             return
-        delay = ("%gms" % one_way)
-        command(["tc", "qdisc", "replace", "dev", "veth-root", "root", "netem", "delay", delay])
-        command([IP, "netns", "exec", "cli", "tc", "qdisc", "replace",
-                 "dev", "veth-cli", "root", "netem", "delay", delay])
+
+        command([IP, "-n", "cli", "link", "add", "ifb0", "type", "ifb"])
+        command([IP, "-n", "cli", "link", "set", "ifb0", "up"])
+        command([IP, "-n", "cli", "tc", "qdisc", "replace", "dev", "tun0", "root",
+                 "netem", "delay", delay])
+        command([IP, "-n", "cli", "tc", "qdisc", "replace", "dev", "tun0", "clsact"])
+        command([IP, "-n", "cli", "tc", "filter", "replace", "dev", "tun0", "ingress",
+                 "protocol", "all", "pref", "10", "matchall", "action", "mirred",
+                 "egress", "redirect", "dev", "ifb0"])
+        command([IP, "-n", "cli", "tc", "qdisc", "replace", "dev", "ifb0", "root",
+                 "netem", "delay", delay])
+
+        stats = command([IP, "-n", "cli", "tc", "-s", "qdisc", "show", "dev", "tun0"],
+                        capture=True)
+        ingress = command([IP, "-n", "cli", "tc", "-s", "filter", "show", "dev", "tun0",
+                           "ingress"], capture=True)
+        reverse = command([IP, "-n", "cli", "tc", "-s", "qdisc", "show", "dev", "ifb0"],
+                          capture=True)
+        (self.artifacts / ("netem-rtt-%dms.txt" % rtt_ms)).write_text(
+            "TUN egress qdisc:\n" + stats.stdout +
+            "\nTUN ingress redirect:\n" + ingress.stdout +
+            "\nIFB reverse qdisc:\n" + reverse.stdout,
+            encoding="utf-8",
+        )
 
     def start_engine(self, arm):
         if self.engine is not None:
@@ -341,6 +362,7 @@ class Lab:
             raise TimeoutError("%s engine did not create tun0" % name)
         command([IP, "-n", "cli", "link", "set", "tun0", "mtu", "1500", "up"])
         command([IP, "-n", "cli", "route", "replace", "default", "dev", "tun0"])
+        self.apply_rtt(0)
 
     def stop_engine(self):
         if self.engine is None:
@@ -351,6 +373,7 @@ class Lab:
         status = process.returncode
         self.engine = None
         self.engine_arm = None
+        command([IP, "-n", "cli", "link", "del", "ifb0"], check=False)
         deadline = time.monotonic() + 10
         while time.monotonic() < deadline:
             probe = subprocess.run(
@@ -549,6 +572,7 @@ class Lab:
                 for arm in arms:
                     self.start_engine(arm)
                     try:
+                        self.apply_rtt(rtt)
                         self.run_ttfb_profile(arm, rtt, ttfb_writer)
                     finally:
                         self.stop_engine()
@@ -562,6 +586,7 @@ class Lab:
                         for arm in order:
                             self.start_engine(arm)
                             try:
+                                self.apply_rtt(rtt)
                                 self.check_engine()
                                 pid = self.engine.pid
                                 reset_peak_rss(pid)
@@ -614,7 +639,6 @@ class Lab:
         self.run_calibration(by_label["P2D"])
 
     def run_calibration(self, arm):
-        self.apply_rtt(0)
         path = "large.bin"
         output = self.artifacts / "calibration.csv"
         with output.open("w", newline="", encoding="utf-8") as target:
@@ -627,6 +651,7 @@ class Lab:
             writer.writeheader()
             self.start_engine(arm)
             try:
+                self.apply_rtt(0)
                 for number in range(1, 11):
                     pid = self.engine.pid
                     reset_peak_rss(pid)
@@ -762,7 +787,6 @@ class Lab:
     def run_memory(self):
         arms = [arm for arm in self.manifest["arms"] if arm["kind"] == "badvpn"]
         output = self.artifacts / "memory.csv"
-        self.apply_rtt(0)
         with output.open("w", newline="", encoding="utf-8") as target:
             fields = [
                 "arm", "commit", "mode", "requested", "connected", "client_errors",
@@ -776,6 +800,7 @@ class Lab:
             for arm in arms:
                 self.start_engine(arm)
                 try:
+                    self.apply_rtt(0)
                     for count in MEMORY_COUNTS:
                         for mode in ("idle", "stalled"):
                             self.run_memory_case(arm, mode, count, writer)
