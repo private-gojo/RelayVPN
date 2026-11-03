@@ -126,6 +126,8 @@ jobs:
             local expected="$4"
             local packets_per_flow="${5:-1}"
             local pause_ms="${6:-0}"
+            local send_batch_size="${7:-64}"
+            local send_batch_delay_ms="${8:-50}"
             local config="$ROOT/$label.yml"
 
             echo "--- $label: max-session-count=$limit flows=$flows expected=$expected ---"
@@ -148,14 +150,8 @@ jobs:
             limit-nofile: 65535
           EOF
 
-            if [[ "$pause_ms" -gt 0 ]]; then
-              sudo env HEV_WP6_QUEUE_PAUSE_MS="$pause_ms" \
-                bash -c 'ulimit -n 65535; exec ip netns exec cli "$1" "$2"' \
-                _ "$HEV_BIN" "$config" > "$ROOT/logs/$label-hev.log" 2>&1 &
-            else
-              sudo bash -c 'ulimit -n 65535; exec ip netns exec cli "$1" "$2"' \
-                _ "$HEV_BIN" "$config" > "$ROOT/logs/$label-hev.log" 2>&1 &
-            fi
+            sudo bash -c 'ulimit -n 65535; exec ip netns exec cli "$1" "$2"' \
+              _ "$HEV_BIN" "$config" > "$ROOT/logs/$label-hev.log" 2>&1 &
             HEV_PID=$!
 
             for i in $(seq 1 45); do
@@ -178,7 +174,8 @@ jobs:
               --packets-per-flow "$packets_per_flow" \
               --wait-target "$expected" --timeout-ms 45000 \
               --settle-ms 2000 --response-seconds 6 \
-              --send-batch-size 64 --send-batch-delay-ms 50; then
+              --send-batch-size "$send_batch_size" \
+              --send-batch-delay-ms "$send_batch_delay_ms"; then
               echo "$label client_status=0"
             else
               local client_status=$?
@@ -222,12 +219,7 @@ jobs:
           run_case session-limit-1 1 1 1
           run_case session-limit-2 2 2 2
           run_case session-limit-130 130 130 130
-          run_case udp-queue-512-boundary 0 1 512 640 1500
-          if ! grep -q "WP6_UDP_QUEUE_PAUSE ms=1500" \
-            "$ROOT/logs/udp-queue-512-boundary-hev.log"; then
-            echo "queue boundary pause hook was not compiled or activated" >&2
-            FAILURES+=("UDP queue pause instrumentation not observed")
-          fi
+          run_case udp-queue-512-boundary 0 1 512 640 0 1024 0
           if ! grep -q "WP6_UDP_QUEUE_DROP frames=512 limit=512" \
             "$ROOT/logs/udp-queue-512-boundary-hev.log"; then
             echo "queue boundary probe did not observe the 512-frame drop guard" >&2
@@ -239,7 +231,7 @@ jobs:
             echo ""
             echo "### Interpretation"
             echo "- Session cap cases record the current source behavior: configured N permits up to N surviving sessions; excess sessions are evicted."
-            echo "- The queue case sends 640 datagrams through one UDP flow with a test-only 1.5-second forwarding pause and checks the exact 512-frame admission boundary."
+            echo "- The queue case submits 640 datagrams in one burst through one UDP flow; the WP6 test build raises TUN_READ_BATCH to let the per-session queue reach its configured boundary."
             echo "- The 1,025-flow case is a high-flow smoke measurement; lwIP uses heap-backed UDP PCBs (MEMP_MEM_MALLOC=1), so MEMP_NUM_UDP_PCB is not a hard cap in this build."
           } >> "$GITHUB_STEP_SUMMARY"
 
