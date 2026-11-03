@@ -29,6 +29,7 @@ type options struct {
 	mappings int
 	udpMTU int
 	report string
+	oneClientPerMapping bool
 }
 
 type metrics struct {
@@ -58,6 +59,7 @@ type report struct {
 	PersistenceResponses int64 `json:"persistence_responses"`
 	PersistenceRoundTripMS int64 `json:"persistence_round_trip_ms"`
 	ServerPID int `json:"server_pid"`
+	OneClientPerMapping bool `json:"one_client_per_mapping"`
 	FailedAt int `json:"failed_at_mappings,omitempty"`
 	FailureRound int `json:"failure_round,omitempty"`
 	CurrentResponses int64 `json:"current_responses,omitempty"`
@@ -96,6 +98,7 @@ func parseOptions() options {
 	flag.IntVar(&o.mappings, "mappings", 1000, "Maximum active UDP mappings")
 	flag.IntVar(&o.udpMTU, "udp-mtu", 1500, "UDP MTU for this benchmark")
 	flag.StringVar(&o.report, "report", "", "Optional JSON report path")
+	flag.BoolVar(&o.oneClientPerMapping, "one-client-per-mapping", false, "Use one TCP client session per active UDP mapping")
 	flag.Parse()
 	return o
 }
