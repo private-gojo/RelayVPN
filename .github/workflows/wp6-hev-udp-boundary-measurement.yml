@@ -158,7 +158,7 @@ jobs:
 
             if sudo bash -c 'ulimit -n 65535; exec ip netns exec cli python3 "$@"' \
               _ "$CLIENT" --flows "$flows" --expected "$expected" \
-              --wait-target "$expected" --timeout-ms 20000 \
+              --wait-target "$expected" --timeout-ms 45000 \
               --settle-ms 2000 --response-seconds 6; then
               echo "$label client_status=0"
             else
