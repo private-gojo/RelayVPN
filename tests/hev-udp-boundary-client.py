@@ -57,6 +57,7 @@ def main():
     sockets = []
     send_errors = []
     responses = set()
+    response_length_errors = []
     total_packets = args.flows * args.packets_per_flow
     expected_proxy_records = (
         args.expected if args.expected_proxy_records is None
@@ -112,7 +113,12 @@ def main():
                     index = int.from_bytes(data[4:8], "big")
                     sequence = int.from_bytes(data[8:12], "big")
                     if 0 <= index < args.flows and sequence < args.packets_per_flow:
-                        responses.add((index, sequence))
+                        if len(data) != args.payload_size:
+                            response_length_errors.append(
+                                (index, sequence, len(data), args.payload_size)
+                            )
+                        else:
+                            responses.add((index, sequence))
 
         if args.expected == total_packets:
             expected_ids = {
@@ -131,6 +137,7 @@ def main():
             f"sent={sent} payload_size={args.payload_size} "
             f"proxy_records={recorded} expected_proxy_records={expected_proxy_records} "
             f"responses={len(responses)} expected={args.expected} "
+            f"length_errors={response_length_errors[:10]} "
             f"send_errors={len(send_errors)} missing={missing[:20]}"
         )
         if recorded != expected_proxy_records:
@@ -145,6 +152,8 @@ def main():
             )
         if expected_ids and missing:
             raise SystemExit(f"missing expected responses: {missing[:20]}")
+        if response_length_errors:
+            raise SystemExit(f"response length mismatch: {response_length_errors[:10]}")
         print("PASS: measured responder count matches the pinned baseline")
     finally:
         for sock in sockets:
