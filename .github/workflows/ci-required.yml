@@ -5,6 +5,7 @@ on:
     branches:
       - main
       - phase2e/measurement-gate
+      - codex/udpgw-1000-client-scale-test
   pull_request:
     branches:
       - main
