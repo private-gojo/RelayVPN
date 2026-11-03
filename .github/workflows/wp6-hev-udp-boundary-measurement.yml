@@ -59,9 +59,7 @@ jobs:
           set -euo pipefail
           HEV_LWIP="third_party/hev-socks5-tunnel/third-part/lwip/src"
           echo "CFLAGS environment: ${CFLAGS:-<unset>}"
-          printf '#include <lwip/opt.h>\n' | gcc ${CFLAGS:-} \\
-            -I"$HEV_LWIP/include" -I"$HEV_LWIP/ports/include" \\
-            -dM -E -x c - | grep -E '^#define (MEMP_MEM_MALLOC|MEMP_NUM_UDP_PCB|LWIP_UDP) '
+          printf '#include <lwip/opt.h>\n' | gcc ${CFLAGS:-} -I"$HEV_LWIP/include" -I"$HEV_LWIP/ports/include" -dM -E -x c - | grep -E '^#define (MEMP_MEM_MALLOC|MEMP_NUM_UDP_PCB|LWIP_UDP) '
           grep -n "lwipopts.h" third_party/hev-socks5-tunnel/third-part/lwip/build/core/udp.dep || true
 
       - name: Run session-count and UDP PCB boundary measurements
