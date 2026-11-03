@@ -44,6 +44,8 @@ go run ./tests/udpgw-data-plane/main.go \
 This benchmark creates real UDPGW mappings against eight local UDP echo endpoints, verifies a configurable-size payload for every mapping, then sends a second datagram through every mapping to confirm persistence. The default payload is 1200 bytes at UDP MTU 1500; the report includes per-stage p50/p95/p99/max latency, completion packets per second, and echoed-payload Mbps. It uses up to two TCP client sessions because each client's mapping ID is 16-bit. The test binds UDP sockets round-robin across four configured local IPv4 addresses using kernel-assigned ephemeral ports; each address therefore has its own ephemeral-port capacity. The optional `--one-client-per-mapping` profile creates one TCP client session for each UDP mapping and is currently capped at 10,000 sessions to stay within the single-runner source-port budget. The benchmark MTU is explicitly set to 1500; this does not change the production default MTU.
 
 For a combined TCP-client plus UDP-mapping profile, run up to 10,000 clients with one active mapping each:
+The automated `[one-client-10k]` push profile runs this combined scenario after the 100,000-session TCP capacity check.
+
 
 ~~~sh
 go run ./tests/udpgw-data-plane/main.go \
