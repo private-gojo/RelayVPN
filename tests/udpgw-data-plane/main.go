@@ -43,6 +43,8 @@ type metrics struct {
 
 type stage struct {
 	Mappings int `json:"mappings"`
+	BatchMappings int `json:"batch_mappings"`
+	BatchResponses int64 `json:"batch_responses"`
 	RoundTripMS int64 `json:"round_trip_ms"`
 	Responses int64 `json:"responses"`
 	Server metrics `json:"server"`
@@ -423,17 +425,21 @@ func waitCount(c *counters, round int, want int64, errs <-chan error) error {
 	return nil
 }
 
-func latencyStats(sessions []*session, round, count int) (uint64, uint64, uint64, uint64) {
-	samples := make([]uint64, 0, count)
-	remaining := count
+func latencyStats(sessions []*session, round, start, end int) (uint64, uint64, uint64, uint64) {
+	samples := make([]uint64, 0, end-start)
+	offset := 0
 	for _, current := range sessions {
-		if remaining == 0 { break }
-		n := len(current.latency[round-1])
-		if n > remaining { n = remaining }
-		for _, sample := range current.latency[round-1][:n] {
-			if sample > 0 { samples = append(samples, sample) }
+		localStart := start - offset
+		if localStart < 0 { localStart = 0 }
+		localEnd := end - offset
+		if localEnd > len(current.latency[round-1]) { localEnd = len(current.latency[round-1]) }
+		if localEnd > localStart {
+			for _, sample := range current.latency[round-1][localStart:localEnd] {
+				if sample > 0 { samples = append(samples, sample) }
+			}
 		}
-		remaining -= n
+		offset += len(current.maps)
+		if offset >= end { break }
 	}
 	if len(samples) == 0 { return 0, 0, 0, 0 }
 	sort.Slice(samples, func(i, j int) bool { return samples[i] < samples[j] })
@@ -561,16 +567,17 @@ func run(o options) error {
 		}
 		if err := waitCount(c, 1, int64(targetCount), errs); err != nil { return recordFailure(&r, targetCount, 1, started, c, pid, echo, err) }
 		elapsed := time.Since(started)
-		p50, p95, p99, maxLatency := latencyStats(sessions, 1, targetCount)
-		pps, mbps := throughput(targetCount, o.payloadSize, elapsed)
-		entry := stage{Mappings: targetCount, RoundTripMS: elapsed.Milliseconds(),
+		batchCount := targetCount - previous
+		p50, p95, p99, maxLatency := latencyStats(sessions, 1, previous, targetCount)
+		pps, mbps := throughput(batchCount, o.payloadSize, elapsed)
+		entry := stage{Mappings: targetCount, BatchMappings: batchCount, BatchResponses: int64(batchCount), RoundTripMS: elapsed.Milliseconds(),
 			Responses: c.round[0].Load(), Server: procMetrics(pid), Generator: procMetrics(os.Getpid()),
 			P50LatencyUS: p50, P95LatencyUS: p95, P99LatencyUS: p99, MaxLatencyUS: maxLatency,
 			CompletionPPS: pps, EchoResponseMbps: mbps}
 		r.Stages = append(r.Stages, entry)
 		r.LastStable = targetCount
-		fmt.Printf("mappings=%d round_trip_ms=%d replies=%d p50_us=%d p95_us=%d p99_us=%d pps=%.1f echo_mbps=%.2f server_rss_kib=%d server_fd=%d\n",
-			entry.Mappings, entry.RoundTripMS, entry.Responses, entry.P50LatencyUS, entry.P95LatencyUS, entry.P99LatencyUS,
+		fmt.Printf("mappings=%d new_mappings=%d replies=%d new_replies=%d round_trip_ms=%d p50_us=%d p95_us=%d p99_us=%d pps=%.1f echo_mbps=%.2f server_rss_kib=%d server_fd=%d\n",
+			entry.Mappings, entry.BatchMappings, entry.Responses, entry.BatchResponses, entry.RoundTripMS, entry.P50LatencyUS, entry.P95LatencyUS, entry.P99LatencyUS,
 			entry.CompletionPPS, entry.EchoResponseMbps, entry.Server.RSS, entry.Server.FD)
 		previous = targetCount
 	}
@@ -586,7 +593,7 @@ func run(o options) error {
 	r.PersistenceResponses = c.round[1].Load()
 	persistElapsed := time.Since(persistStart)
 	r.PersistenceRoundTripMS = persistElapsed.Milliseconds()
-	r.PersistenceP50LatencyUS, r.PersistenceP95LatencyUS, r.PersistenceP99LatencyUS, r.PersistenceMaxLatencyUS = latencyStats(sessions, 2, o.mappings)
+	r.PersistenceP50LatencyUS, r.PersistenceP95LatencyUS, r.PersistenceP99LatencyUS, r.PersistenceMaxLatencyUS = latencyStats(sessions, 2, 0, o.mappings)
 	r.EchoPackets, r.EchoErrors = echo.packets.Load(), echo.errors.Load()
 	if r.EchoPackets < uint64(o.mappings*2) || r.EchoErrors != 0 {
 		return recordFailure(&r, o.mappings, 2, persistStart, c, pid, echo, fmt.Errorf("UDP echo validation failed: packets=%d expected>=%d errors=%d", r.EchoPackets, o.mappings*2, r.EchoErrors))
