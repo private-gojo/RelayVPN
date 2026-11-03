@@ -38,7 +38,7 @@ def main():
     parser.add_argument("--send-batch-delay-ms", type=float, default=25.0)
     args = parser.parse_args()
 
-    if args.flows < 1 or args.expected < 0 or args.expected > args.flows:
+    if args.flows < 1 or args.expected < 0:
         raise SystemExit("invalid flow or expected count")
     if args.send_batch_size < 1 or args.send_batch_delay_ms < 0:
         raise SystemExit("invalid send pacing settings")
