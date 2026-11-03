@@ -10,11 +10,6 @@
 #include <errno.h>
 #include <string.h>
 
-#ifdef HEV_WP6_BOUNDARY_TEST
-#include <stdlib.h>
-static int wp6_udp_queue_pause_done;
-static int wp6_udp_queue_pause_active;
-#endif
 
 #include <lwip/udp.h>
 
@@ -91,21 +86,6 @@ hev_socks5_session_udp_fwd_f (HevSocks5SessionUDP *self)
 
     if (self->frames <= 0)
         return 0;
-
-#ifdef HEV_WP6_BOUNDARY_TEST
-    if (!wp6_udp_queue_pause_done) {
-        const char *pause_ms = getenv ("HEV_WP6_QUEUE_PAUSE_MS");
-        int delay = pause_ms ? atoi (pause_ms) : 0;
-
-        if (delay > 0) {
-            wp6_udp_queue_pause_done = 1;
-            wp6_udp_queue_pause_active = 1;
-            LOG_I ("WP6_UDP_QUEUE_PAUSE ms=%d frames=%d", delay, self->frames);
-            hev_task_sleep (delay);
-            wp6_udp_queue_pause_active = 0;
-        }
-    }
-#endif
 
     /* Drain the whole queue, frames keep arriving while we are away. */
     while (self->frames > 0) {
@@ -327,12 +307,7 @@ udp_recv_handler (void *arg, struct udp_pcb *pcb, struct pbuf *p,
 
     self->frames++;
     hev_list_add_tail (&self->frame_list, &frame->node);
-#ifdef HEV_WP6_BOUNDARY_TEST
-    if (!wp6_udp_queue_pause_active)
-        hev_task_wakeup (self->data.task);
-#else
     hev_task_wakeup (self->data.task);
-#endif
 }
 
 HevSocks5SessionUDP *
