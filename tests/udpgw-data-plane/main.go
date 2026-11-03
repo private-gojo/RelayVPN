@@ -73,6 +73,8 @@ type report struct {
 	PersistenceP95LatencyUS uint64 `json:"persistence_p95_latency_us"`
 	PersistenceP99LatencyUS uint64 `json:"persistence_p99_latency_us"`
 	PersistenceMaxLatencyUS uint64 `json:"persistence_max_latency_us"`
+	PersistenceCompletionPPS float64 `json:"persistence_completion_pps"`
+	PersistenceEchoResponseMbps float64 `json:"persistence_echo_response_mbps"`
 	ServerPID int `json:"server_pid"`
 	OneClientPerMapping bool `json:"one_client_per_mapping"`
 	FailedAt int `json:"failed_at_mappings,omitempty"`
@@ -599,6 +601,7 @@ func run(o options) error {
 		return recordFailure(&r, o.mappings, 2, persistStart, c, pid, echo, fmt.Errorf("UDP echo validation failed: packets=%d expected>=%d errors=%d", r.EchoPackets, o.mappings*2, r.EchoErrors))
 	}
 	pps, mbps := throughput(int(r.PersistenceResponses), o.payloadSize, persistElapsed)
+	r.PersistenceCompletionPPS, r.PersistenceEchoResponseMbps = pps, mbps
 	if err := writeReport(o.report, r); err != nil { return err }
 	fmt.Printf("PASS: active_mappings=%d clients=%d udp_mtu=%d payload=%d echo_packets=%d persistence_replies=%d p50_us=%d p95_us=%d p99_us=%d pps=%.1f echo_mbps=%.2f server_rss_kib=%d report=%s\n",
 		o.mappings, clients, o.udpMTU, o.payloadSize, r.EchoPackets, r.PersistenceResponses,
