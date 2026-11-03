@@ -160,6 +160,10 @@ hev_socks5_tunnel_evict_session (HevListNode *node)
     hev_list_del (&session_set, node);
     hev_socks5_tunnel_mark_evicted (node);
     session_count--;
+#ifdef HEV_WP6_BOUNDARY_TEST
+    LOG_W ("WP6_SESSION_EVICT active=%d limit=%d", session_count,
+           hev_config_get_misc_max_session_count ());
+#endif
     evicted_count++;
     hev_socks5_session_terminate (sd->self);
 }
