@@ -1,6 +1,9 @@
 name: UDPGW Capacity
 
 on:
+  push:
+    branches:
+      - codex/ipv6-udp-extension-support
   workflow_dispatch:
     inputs:
       max_clients:
