@@ -46,6 +46,8 @@ This benchmark creates real UDPGW mappings against eight local UDP echo endpoint
 For a combined TCP-client plus UDP-mapping profile, run up to 10,000 clients with one active mapping each:
 The automated `[one-client-10k]` push profile runs this combined scenario after the 100,000-session TCP capacity check, and reports incremental batch latency and echo goodput.
 
+The automated `[capacity-100k]` push profile runs 100,000 active UDP mappings at UDP MTU 1500 across two UDPGW TCP sessions, after the 100,000-session TCP capacity check. This is a mapping-capacity profile, not 100,000 distinct TCP clients.
+
 
 ~~~sh
 go run ./tests/udpgw-data-plane/main.go \
