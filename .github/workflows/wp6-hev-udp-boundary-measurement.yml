@@ -66,6 +66,7 @@ jobs:
 
           HEV_PID=""
           PROXY_PID=""
+          FAILURES=()
 
           cleanup() {
             set +e
@@ -155,18 +156,31 @@ jobs:
             sudo ip -n cli link set tun0 up
             sudo ip -n cli route replace default dev tun0
 
-            sudo bash -c 'ulimit -n 65535; exec ip netns exec cli python3 "$@"' \
+            if sudo bash -c 'ulimit -n 65535; exec ip netns exec cli python3 "$@"' \
               _ "$CLIENT" --flows "$flows" --expected "$expected" \
               --wait-target "$expected" --timeout-ms 20000 \
-              --settle-ms 2000 --response-seconds 6
+              --settle-ms 2000 --response-seconds 6; then
+              echo "$label client_status=0"
+            else
+              local client_status=$?
+              echo "$label client_status=$client_status"
+              FAILURES+=("$label client status $client_status")
+            fi
 
-            sudo kill -TERM "$HEV_PID"
+            tail -n 100 "$ROOT/logs/$label-hev.log" || true
+            if sudo kill -0 "$HEV_PID" 2>/dev/null; then
+              sudo kill -TERM "$HEV_PID" 2>/dev/null || true
+            else
+              echo "$label: Hev exited before shutdown request"
+            fi
             set +e
             wait "$HEV_PID"
             local status=$?
             set -e
             echo "$label hev_exit_status=$status"
-            test "$status" -eq 0
+            if [[ "$status" -ne 0 ]]; then
+              FAILURES+=("$label Hev exit status $status")
+            fi
             HEV_PID=""
 
             for i in $(seq 1 20); do
@@ -177,7 +191,7 @@ jobs:
             done
             if sudo ip -n cli link show tun0 >/dev/null 2>&1; then
               echo "tun0 still exists after $label" >&2
-              return 1
+              FAILURES+=("$label TUN cleanup failed")
             fi
 
             echo "- $label: expected $expected responders from $flows flows (max-session-count=$limit)" \
@@ -199,6 +213,12 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
 
           cp -a "$ROOT/logs/." "$ARTIFACT_DIR/"
+
+          if [[ ${#FAILURES[@]} -gt 0 ]]; then
+            printf '%s\n' "${FAILURES[@]}"
+            printf '%s\n' "${FAILURES[@]}" >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
 
       - name: Upload WP6 measurement artifacts
         if: always()
