@@ -46,6 +46,7 @@ jobs:
       MAX_CLIENTS: ${{ github.event_name == 'push' && '100000' || inputs.max_clients || '10000' }}
       MAX_MAPPINGS: ${{ github.event_name == 'push' && contains(github.event.head_commit.message, '[capacity-100k]') && '100000' || github.event_name == 'push' && contains(github.event.head_commit.message, '[one-client-10k]') && '10000' || github.event_name == 'push' && '1000' || inputs.max_mappings || '1000' }}
       ONE_CLIENT_PER_MAPPING: ${{ github.event_name == 'push' && contains(github.event.head_commit.message, '[one-client-10k]') }}
+      RUN_MTU_SWEEP: ${{ github.event_name == 'push' && contains(github.event.head_commit.message, '[mtu-sweep]') }}
     steps:
       - name: Checkout RelayVPN
         uses: actions/checkout@v4
@@ -87,13 +88,21 @@ jobs:
           if [[ "$ONE_CLIENT_PER_MAPPING" == "true" ]]; then
             DATA_PLANE_ARGS+=(--one-client-per-mapping)
           fi
-          go run ./tests/udpgw-data-plane/main.go \
+          go build -o "$RUNNER_TEMP/udpgw-data-plane" ./tests/udpgw-data-plane
+          "$RUNNER_TEMP/udpgw-data-plane" \
             --binary "$RUNNER_TEMP/relayvpn-capacity-build/udpgw/badvpn-udpgw" \
             --mappings "$MAX_MAPPINGS" \
             --udp-mtu 1500 \
             --payload-size 1200 \
             "${DATA_PLANE_ARGS[@]}" \
             --report "$RUNNER_TEMP/udpgw-data-plane.json"
+          if [[ "$RUN_MTU_SWEEP" == "true" ]]; then
+            bash tests/udpgw-data-plane/mtu-memory-sweep.sh \
+              "$RUNNER_TEMP/relayvpn-capacity-build/udpgw/badvpn-udpgw" \
+              "$RUNNER_TEMP/udpgw-data-plane" \
+              1000 \
+              "$RUNNER_TEMP/udpgw-mtu-sweep"
+          fi
 
       - name: Upload capacity report
         if: always()
@@ -103,5 +112,6 @@ jobs:
           path: |
             ${{ runner.temp }}/udpgw-capacity.json
             ${{ runner.temp }}/udpgw-data-plane.json
+            ${{ runner.temp }}/udpgw-mtu-sweep/**
           if-no-files-found: warn
           retention-days: 30
