@@ -427,40 +427,39 @@ func run(o options) error {
 	if err != nil { return err }
 	defer func() { _ = server.Process.Signal(syscall.SIGTERM); <-done }()
 
+	errs := make(chan error, clients)
 	sessions := make([]*session, clients)
 	for i := range sessions {
-		conn, err := net.DialTimeout("tcp", target, 5*time.Second)
-		if err != nil { return fmt.Errorf("connect client %d: %w", i, err) }
-		if tcp, ok := conn.(*net.TCPConn); ok { _ = tcp.SetNoDelay(true) }
-		count := o.mappings - i*65536
-		if count > 65536 { count = 65536 }
-		sessions[i] = &session{conn: conn, reader: bufio.NewReaderSize(conn, 1<<20),
-			maps: make([]mapping, count), seen: [2][]bool{make([]bool, count), make([]bool, count)}, err: make(chan error, 1)}
+		count := 1
+		if !o.oneClientPerMapping {
+			count = o.mappings - i*65536
+			if count > 65536 { count = 65536 }
+		}
+		sessions[i] = &session{
+			maps: make([]mapping, count),
+			seen: [2][]bool{make([]bool, count), make([]bool, count)},
+			err: errs,
+		}
 	}
-	defer func() { for _, s := range sessions { _ = s.conn.Close() } }()
 
 	global := 0
-	for _, s := range sessions {
-		for i := range s.maps {
-			s.maps[i] = makeMapping(echo.target(global), uint32(global))
+	for _, current := range sessions {
+		for i := range current.maps {
+			current.maps[i] = makeMapping(echo.target(global), uint32(global))
 			global++
 		}
 	}
+	if err := dialSessions(target, sessions, 64); err != nil { return err }
+	defer func() { for _, current := range sessions { if current.conn != nil { _ = current.conn.Close() } } }()
 
 	c := &counters{}
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	errs := make(chan error, len(sessions))
-	for _, s := range sessions {
-		go s.readLoop(c)
-		s.keepalive(ctx)
-		go func(current *session) {
-			select { case e := <-current.err: errs <- e; case <-ctx.Done(): }
-		}(s)
-	}
+	for _, current := range sessions { go current.readLoop(c) }
+	keepaliveSessions(ctx, sessions)
 
 	r := report{Requested: o.mappings, Clients: clients, UDPMTU: o.udpMTU,
-		EchoServers: len(echo.conns), SourceBindIPs: 4, ServerPID: pid,
+		EchoServers: len(echo.conns), SourceBindIPs: 4, OneClientPerMapping: o.oneClientPerMapping, ServerPID: pid,
 		Stages: make([]stage, 0, len(stages(o.mappings))+1)}
 	defer func() {
 		if e := writeReport(o.report, r); e != nil { fmt.Fprintf(os.Stderr, "write partial report: %v\n", e) }
