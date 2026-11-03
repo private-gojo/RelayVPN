@@ -78,6 +78,7 @@ jobs:
           "$TEST_DIR/tcp_window_config_test"
           "$TEST_DIR/udp_proto_test"
           bash tests/tunfd-cli-test.sh "$RUNNER_TEMP/relayvpn-ci-build/tun2socks/badvpn-tun2socks"
+          sudo python3 tests/tunfd-runtime-smoke.py "$RUNNER_TEMP/relayvpn-ci-build/tun2socks/badvpn-tun2socks"
           bash tests/udpgw-cli-validation.sh \
             "$RUNNER_TEMP/relayvpn-ci-build/tun2socks/badvpn-tun2socks" \
             "$RUNNER_TEMP/relayvpn-ci-build/udpgw/badvpn-udpgw"
