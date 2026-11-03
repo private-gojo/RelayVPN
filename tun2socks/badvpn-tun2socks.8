@@ -20,6 +20,8 @@ badvpn-tun2socks
 .br
   [\fB\-\-tundev\fR <name>]
 .br
+  [\fB\-\-tunfd\fR <fd> \fB\-\-tunmtu\fR <mtu>] (POSIX)
+.br
   \fB\-\-netif\-ipaddr\fR <ipaddr>
 .br
   \fB\-\-netif\-netmask\fR <ipnetmask>
@@ -42,6 +44,13 @@ connections (regardless of destination IP), and forwards them through
 a SOCKS server. This allows you to forward all connections through
 SOCKS, without any need for application support. It can be used, for
 example, to forward connections through a remote SSH server.
+
+On POSIX systems, an already-open TUN file descriptor may be supplied with
+.B --tunfd
+and its packet MTU with
+.B --tunmtu
+instead of opening a device by name. The descriptor remains caller-owned and
+is not closed by tun2socks.
 .SH EXAMPLE
 .PP
 This example demonstrates using tun2socks in combination with SSH's dynamic forwarding feature.
