@@ -72,7 +72,7 @@ bash tests/udpgw-data-plane/mtu-memory-sweep.sh \
   ./udpgw-mtu-sweep
 ~~~
 
-The sweep runs 1,000 active mappings at UDP MTUs 576, 1200, 1500, 4096, 8192, 16384, 32768, and 65514. Payload is 512 bytes at MTU 576, 1000 bytes at MTU 1200, and 1200 bytes at the larger MTUs. Each profile starts a fresh UDPGW process and writes an individual JSON report plus a Markdown summary. This isolates process RSS/HWM per MTU; it does not alter the production default.
+The sweep runs 1,000 active mappings at UDP MTUs 576, 1200, 1500, 4096, 8192, 16384, 32768, and 65514. Each payload fills the configured UDP MTU; the final IPv4 profile is capped at 65507 bytes, the maximum IPv4 UDP payload. This deliberately touches the large per-mapping buffers instead of measuring mostly-reserved, untouched memory. Each profile starts a fresh UDPGW process and writes an individual JSON report plus a Markdown summary. This measures RSS/HWM under full-packet use; it does not alter the production default.
 
 The [mtu-sweep] capacity-workflow push profile runs this matrix after its normal 100k TCP-session and active-mapping checks. A push commit containing the [mtu-sweep] marker in its message enables the profile.
 
