@@ -83,4 +83,93 @@ static int ipv6_check (uint8_t *data, int data_len, struct ipv6_header *out_head
     return 1;
 }
 
+
+#define IPV6_NEXT_HOP_BY_HOP 0
+#define IPV6_NEXT_ROUTING 43
+#define IPV6_NEXT_FRAGMENT 44
+#define IPV6_NEXT_ESP 50
+#define IPV6_NEXT_AH 51
+#define IPV6_NEXT_DESTINATION 60
+#define IPV6_NEXT_MOBILITY 135
+#define IPV6_NEXT_HIP 139
+#define IPV6_NEXT_SHIM6 140
+
+static int ipv6_udp_payload (
+    const struct ipv6_header *header,
+    uint8_t *payload,
+    int payload_len,
+    uint8_t **out_payload,
+    int *out_payload_len
+)
+{
+    ASSERT(header)
+    ASSERT(payload_len >= 0)
+    ASSERT(out_payload)
+    ASSERT(out_payload_len)
+
+    uint8_t next_header = header->next_header;
+    int offset = 0;
+
+    for (int extension_count = 0; ; extension_count++) {
+        int remaining = payload_len - offset;
+        uint8_t following_header;
+        int extension_len;
+
+        if (next_header == IPV6_NEXT_UDP) {
+            *out_payload = payload + offset;
+            *out_payload_len = remaining;
+            return 1;
+        }
+        if (extension_count >= 16) {
+            return 0;
+        }
+
+        switch (next_header) {
+            case IPV6_NEXT_HOP_BY_HOP:
+            case IPV6_NEXT_ROUTING:
+            case IPV6_NEXT_DESTINATION:
+            case IPV6_NEXT_MOBILITY:
+            case IPV6_NEXT_HIP:
+            case IPV6_NEXT_SHIM6:
+                if (remaining < 2) {
+                    return 0;
+                }
+                following_header = payload[offset];
+                extension_len = ((int)payload[offset + 1] + 1) * 8;
+                break;
+
+            case IPV6_NEXT_FRAGMENT: {
+                uint16_t fragment_bits;
+                if (remaining < 8) {
+                    return 0;
+                }
+                memcpy(&fragment_bits, payload + offset + 2, sizeof(fragment_bits));
+                if (ntoh16(fragment_bits) != 0) {
+                    return 0;
+                }
+                following_header = payload[offset];
+                extension_len = 8;
+            } break;
+
+            case IPV6_NEXT_AH:
+                if (remaining < 2) {
+                    return 0;
+                }
+                following_header = payload[offset];
+                extension_len = ((int)payload[offset + 1] + 2) * 4;
+                break;
+
+            default:
+                return 0;
+        }
+
+        if (extension_len > remaining) {
+            return 0;
+        }
+
+        offset += extension_len;
+        next_header = following_header;
+    }
+}
+
 #endif

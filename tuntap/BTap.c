@@ -322,6 +322,7 @@ fail0:
     #if defined(BADVPN_LINUX) || defined(BADVPN_FREEBSD)
     
     o->close_fd = (init_data.init_type != BTAP_INIT_FD);
+    o->restore_fd_flags = 0;
     
     switch (init_data.init_type) {
         case BTAP_INIT_FD: {
@@ -433,8 +434,17 @@ fail0:
         default: ASSERT(0);
     }
         
-    // set non-blocking
-    if (fcntl(o->fd, F_SETFL, O_NONBLOCK) < 0) {
+    // set non-blocking without discarding existing file status flags
+    int fd_flags = fcntl(o->fd, F_GETFL);
+    if (fd_flags < 0) {
+        BLog(BLOG_ERROR, "cannot get file status flags");
+        goto fail1;
+    }
+    if (!o->close_fd) {
+        o->fd_original_flags = fd_flags;
+        o->restore_fd_flags = 1;
+    }
+    if (fcntl(o->fd, F_SETFL, fd_flags | O_NONBLOCK) < 0) {
         BLog(BLOG_ERROR, "cannot set non-blocking");
         goto fail1;
     }
@@ -450,6 +460,10 @@ fail0:
     goto success;
     
 fail1:
+    if (o->restore_fd_flags) {
+        fcntl(o->fd, F_SETFL, o->fd_original_flags);
+        o->restore_fd_flags = 0;
+    }
     if (o->close_fd) {
         ASSERT_FORCE(close(o->fd) == 0)
     }
@@ -503,6 +517,12 @@ void BTap_Free (BTap *o)
     // free BFileDescriptor
     BReactor_RemoveFileDescriptor(o->reactor, &o->bfd);
     
+    if (o->restore_fd_flags) {
+        if (fcntl(o->fd, F_SETFL, o->fd_original_flags) < 0) {
+            BLog(BLOG_WARNING, "cannot restore file status flags");
+        }
+        o->restore_fd_flags = 0;
+    }
     if (o->close_fd) {
         // close file descriptor
         ASSERT_FORCE(close(o->fd) == 0)
@@ -559,7 +579,10 @@ void BTap_Send (BTap *o, uint8_t *data, int data_len)
     
 #else
     
-    int bytes = write(o->fd, data, data_len);
+    ssize_t bytes;
+    do {
+        bytes = write(o->fd, data, (size_t)data_len);
+    } while (bytes < 0 && errno == EINTR);
     if (bytes < 0) {
         // malformed packets will cause errors, ignore them and act like
         // the packet was accepeted
@@ -571,6 +594,37 @@ void BTap_Send (BTap *o, uint8_t *data, int data_len)
     
 #endif
 }
+
+#ifdef BADVPN_LINUX
+
+void BTap_SendV (BTap *o, const struct iovec *iov, int iovcnt)
+{
+    DebugObject_Access(&o->d_obj);
+    DebugError_AssertNoError(&o->d_err);
+    ASSERT(iov)
+    ASSERT(iovcnt > 0)
+
+    size_t total_len = 0;
+    for (int i = 0; i < iovcnt; i++) {
+        if (iov[i].iov_len > (size_t)o->frame_mtu - total_len) {
+            BLog(BLOG_WARNING, "packet exceeds device MTU");
+            return;
+        }
+        total_len += iov[i].iov_len;
+    }
+
+    ssize_t bytes;
+    do {
+        bytes = writev(o->fd, iov, iovcnt);
+    } while (bytes < 0 && errno == EINTR);
+    if (bytes < 0) {
+        // Preserve BTap_Send's existing ignored-error behavior.
+    } else if ((size_t)bytes != total_len) {
+        BLog(BLOG_WARNING, "written %zd expected %zu", bytes, total_len);
+    }
+}
+
+#endif
 
 PacketRecvInterface * BTap_GetOutput (BTap *o)
 {

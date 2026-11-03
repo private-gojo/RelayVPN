@@ -31,6 +31,8 @@
 #include <stddef.h>
 #include <string.h>
 #include <limits.h>
+#include <errno.h>
+#include <stdlib.h>
 
 #include <misc/version.h>
 #include <misc/loggers_string.h>
@@ -109,6 +111,11 @@ struct {
     int loglevel;
     int loglevels[BLOG_NUM_CHANNELS];
     char *tundev;
+#ifndef BADVPN_USE_WINAPI
+    int use_tunfd;
+    int tunfd;
+    int tunmtu;
+#endif
     char *netif_ipaddr;
     char *netif_netmask;
     char *netif_ip6addr;
@@ -177,6 +184,7 @@ BReactor ss;
 
 // set to 1 by terminate
 int quitting;
+int exit_status = 1;
 
 // TUN device
 BTap device;
@@ -350,9 +358,24 @@ int main (int argc, char **argv)
     }
     
     // init TUN device
-    if (!BTap_Init(&device, &ss, options.tundev, device_error_handler, NULL, 1)) {
-        BLog(BLOG_ERROR, "BTap_Init failed");
-        goto fail3;
+#ifndef BADVPN_USE_WINAPI
+    if (options.use_tunfd) {
+        struct BTap_init_data init_data;
+        init_data.dev_type = BTAP_DEV_TUN;
+        init_data.init_type = BTAP_INIT_FD;
+        init_data.init.fd.fd = options.tunfd;
+        init_data.init.fd.mtu = options.tunmtu;
+        if (!BTap_Init2(&device, &ss, init_data, device_error_handler, NULL)) {
+            BLog(BLOG_ERROR, "BTap_Init2 failed");
+            goto fail3;
+        }
+    } else
+#endif
+    {
+        if (!BTap_Init(&device, &ss, options.tundev, device_error_handler, NULL, 1)) {
+            BLog(BLOG_ERROR, "BTap_Init failed");
+            goto fail3;
+        }
     }
     
     // NOTE: the order of the following is important:
@@ -391,7 +414,7 @@ int main (int argc, char **argv)
         }
         
         // init udpgw client
-        if (!SocksUdpGwClient_Init(&udpgw_client, udp_mtu, DEFAULT_UDPGW_MAX_CONNECTIONS,
+        if (!SocksUdpGwClient_Init(&udpgw_client, udp_mtu, options.udpgw_max_connections,
             options.udpgw_connection_buffer_size, UDPGW_KEEPALIVE_TIME, socks_server_addr,
             socks_auth_info, socks_num_auth_info, udpgw_remote_server_addr,
             UDPGW_RECONNECT_TIME, &ss, NULL, udp_send_packet_to_device))
@@ -488,7 +511,7 @@ fail1:
 fail0:
     DebugObjectGlobal_Finish();
     
-    return 1;
+    return exit_status;
 }
 
 void terminate (void)
@@ -521,6 +544,9 @@ void print_help (const char *name)
         "        [--loglevel <0-5/none/error/warning/notice/info/debug>]\n"
         "        [--channel-loglevel <channel-name> <0-5/none/error/warning/notice/info/debug>] ...\n"
         "        [--tundev <name>]\n"
+        #ifndef BADVPN_USE_WINAPI
+        "        [--tunfd <fd> --tunmtu <mtu>]\n"
+        #endif
         "        --netif-ipaddr <ipaddr>\n"
         "        --netif-netmask <ipnetmask>\n"
         "        --socks-server-addr <addr>\n"
@@ -544,6 +570,19 @@ void print_version (void)
     printf(GLOBAL_PRODUCT_NAME" "PROGRAM_NAME" "GLOBAL_VERSION"\n"GLOBAL_COPYRIGHT_NOTICE"\n");
 }
 
+static int parse_int_option (const char *value, int minimum, int maximum, int *result)
+{
+    char *end = NULL;
+    errno = 0;
+    long parsed = strtol(value, &end, 10);
+    if (errno || end == value || *end != '\0' || parsed < minimum || parsed > maximum) {
+        return 0;
+    }
+
+    *result = (int)parsed;
+    return 1;
+}
+
 int parse_arguments (int argc, char *argv[])
 {
     if (argc <= 0) {
@@ -562,6 +601,11 @@ int parse_arguments (int argc, char *argv[])
         options.loglevels[i] = -1;
     }
     options.tundev = NULL;
+#ifndef BADVPN_USE_WINAPI
+    options.use_tunfd = 0;
+    options.tunfd = -1;
+    options.tunmtu = 0;
+#endif
     options.netif_ipaddr = NULL;
     options.netif_netmask = NULL;
     options.netif_ip6addr = NULL;
@@ -660,6 +704,31 @@ int parse_arguments (int argc, char *argv[])
             options.tundev = argv[i + 1];
             i++;
         }
+        #ifndef BADVPN_USE_WINAPI
+        else if (!strcmp(arg, "--tunfd")) {
+            if (1 >= argc - i) {
+                fprintf(stderr, "%s: requires an argument\n", arg);
+                return 0;
+            }
+            if (!parse_int_option(argv[i + 1], 0, INT_MAX, &options.tunfd)) {
+                fprintf(stderr, "%s: wrong argument\n", arg);
+                return 0;
+            }
+            options.use_tunfd = 1;
+            i++;
+        }
+        else if (!strcmp(arg, "--tunmtu")) {
+            if (1 >= argc - i) {
+                fprintf(stderr, "%s: requires an argument\n", arg);
+                return 0;
+            }
+            if (!parse_int_option(argv[i + 1], 1, 65535, &options.tunmtu)) {
+                fprintf(stderr, "%s: wrong argument\n", arg);
+                return 0;
+            }
+            i++;
+        }
+        #endif
         else if (!strcmp(arg, "--netif-ipaddr")) {
             if (1 >= argc - i) {
                 fprintf(stderr, "%s: requires an argument\n", arg);
@@ -732,7 +801,7 @@ int parse_arguments (int argc, char *argv[])
                 fprintf(stderr, "%s: requires an argument\n", arg);
                 return 0;
             }
-            if ((options.udpgw_max_connections = atoi(argv[i + 1])) <= 0) {
+            if (!parse_int_option(argv[i + 1], 1, UINT16_MAX + 1, &options.udpgw_max_connections)) {
                 fprintf(stderr, "%s: wrong argument\n", arg);
                 return 0;
             }
@@ -743,7 +812,7 @@ int parse_arguments (int argc, char *argv[])
                 fprintf(stderr, "%s: requires an argument\n", arg);
                 return 0;
             }
-            if ((options.udpgw_connection_buffer_size = atoi(argv[i + 1])) <= 0) {
+            if (!parse_int_option(argv[i + 1], 1, INT_MAX, &options.udpgw_connection_buffer_size)) {
                 fprintf(stderr, "%s: wrong argument\n", arg);
                 return 0;
             }
@@ -765,6 +834,21 @@ int parse_arguments (int argc, char *argv[])
         return 1;
     }
     
+#ifndef BADVPN_USE_WINAPI
+    if (options.use_tunfd && options.tundev) {
+        fprintf(stderr, "--tunfd and --tundev cannot both be used\n");
+        return 0;
+    }
+    if (options.use_tunfd && options.tunmtu <= 0) {
+        fprintf(stderr, "--tunmtu is required with --tunfd\n");
+        return 0;
+    }
+    if (!options.use_tunfd && options.tunmtu > 0) {
+        fprintf(stderr, "--tunmtu requires --tunfd\n");
+        return 0;
+    }
+#endif
+
     if (!options.netif_ipaddr) {
         fprintf(stderr, "--netif-ipaddr is required\n");
         return 0;
@@ -872,7 +956,8 @@ int process_arguments (void)
 void signal_handler (void *unused)
 {
     ASSERT(!quitting)
-    
+    exit_status = 0;
+
     BLog(BLOG_NOTICE, "termination requested");
     
     terminate();
@@ -1112,17 +1197,25 @@ int process_device_udp_packet (uint8_t *data, int data_len)
                 goto fail;
             }
             
+            // Fragmented IPv4 UDP datagrams are not reassembled on the direct UDP path.
+            if (ipv4_is_fragmented(&ipv4_header)) {
+                goto fail;
+            }
+
             // parse UDP
             struct udp_header udp_header;
             if (!udp_check(data, data_len, &udp_header, &data, &data_len)) {
                 goto fail;
             }
             
-            // verify UDP checksum
-            uint16_t checksum_in_packet = udp_header.checksum;
-            udp_header.checksum = 0;
-            uint16_t checksum_computed = udp_checksum(&udp_header, data, data_len, ipv4_header.source_address, ipv4_header.destination_address);
-            if (checksum_in_packet != checksum_computed) {
+            // Verify nonzero IPv4 UDP checksums; zero means checksum disabled.
+            if (!udp_ipv4_checksum_valid(
+                &udp_header,
+                data,
+                (uint16_t)data_len,
+                ipv4_header.source_address,
+                ipv4_header.destination_address
+            )) {
                 goto fail;
             }
             
@@ -1145,17 +1238,27 @@ int process_device_udp_packet (uint8_t *data, int data_len)
                 goto fail;
             }
             
-            // ignore non-UDP packets
-            if (data_len < sizeof(struct ipv6_header) || data[offsetof(struct ipv6_header, next_header)] != IPV6_NEXT_UDP) {
-                goto fail;
-            }
-            
             // parse IPv6 header
             struct ipv6_header ipv6_header;
             if (!ipv6_check(data, data_len, &ipv6_header, &data, &data_len)) {
                 goto fail;
             }
-            
+
+            // Skip supported extension headers before the UDP header.
+            uint8_t *udp_data;
+            int udp_data_len;
+            if (!ipv6_udp_payload(
+                &ipv6_header,
+                data,
+                data_len,
+                &udp_data,
+                &udp_data_len
+            )) {
+                goto fail;
+            }
+            data = udp_data;
+            data_len = udp_data_len;
+
             // parse UDP
             struct udp_header udp_header;
             if (!udp_check(data, data_len, &udp_header, &data, &data_len)) {
@@ -1176,8 +1279,14 @@ int process_device_udp_packet (uint8_t *data, int data_len)
             BAddr_InitIPv6(&local_addr, ipv6_header.source_address, udp_header.source_port);
             BAddr_InitIPv6(&remote_addr, ipv6_header.destination_address, udp_header.dest_port);
             
-            // TODO dns
-            is_dns = 0;
+            // Match transparent DNS requests to the configured IPv6 TUN address.
+            is_dns = (options.udpgw_transparent_dns &&
+                      !memcmp(
+                          ipv6_header.destination_address,
+                          netif_ip6addr.bytes,
+                          sizeof(netif_ip6addr.bytes)
+                      ) &&
+                      udp_header.dest_port == hton16(53));
         } break;
         
         default: {
@@ -1237,31 +1346,56 @@ err_t common_netif_output (struct netif *netif, struct pbuf *p)
         return ERR_OK;
     }
     
-    // if there is just one chunk, send it directly, else via buffer
-    if (!p->next) {
-        if (p->len > BTap_GetMTU(&device)) {
+    int total_len = 0;
+    struct pbuf *chunk;
+    for (chunk = p; chunk; chunk = chunk->next) {
+        if (chunk->len > BTap_GetMTU(&device) - total_len) {
             BLog(BLOG_WARNING, "netif func output: no space left");
             goto out;
         }
-        
-        SYNC_FROMHERE
+        total_len += chunk->len;
+    }
+
+#ifdef BADVPN_LINUX
+    if (p->next) {
+        struct iovec iov[16];
+        int iov_count = 0;
+        int use_iov = 1;
+
+        for (chunk = p; chunk; chunk = chunk->next) {
+            if (chunk->len == 0) {
+                continue;
+            }
+            if (iov_count == (int)(sizeof(iov) / sizeof(iov[0]))) {
+                use_iov = 0;
+                break;
+            }
+            iov[iov_count].iov_base = chunk->payload;
+            iov[iov_count].iov_len = chunk->len;
+            iov_count++;
+        }
+
+        if (use_iov && iov_count > 0) {
+            SYNC_FROMHERE
+            BTap_SendV(&device, iov, iov_count);
+            SYNC_COMMIT
+            goto out;
+        }
+    }
+#endif
+
+    SYNC_FROMHERE
+    if (!p->next) {
         BTap_Send(&device, (uint8_t *)p->payload, p->len);
-        SYNC_COMMIT
     } else {
         int len = 0;
-        do {
-            if (p->len > BTap_GetMTU(&device) - len) {
-                BLog(BLOG_WARNING, "netif func output: no space left");
-                goto out;
-            }
-            memcpy(device_write_buf + len, p->payload, p->len);
-            len += p->len;
-        } while (p = p->next);
-        
-        SYNC_FROMHERE
+        for (chunk = p; chunk; chunk = chunk->next) {
+            memcpy(device_write_buf + len, chunk->payload, chunk->len);
+            len += chunk->len;
+        }
         BTap_Send(&device, device_write_buf, len);
-        SYNC_COMMIT
     }
+    SYNC_COMMIT
     
 out:
     return ERR_OK;
@@ -2012,7 +2146,9 @@ void udp_send_packet_to_device (void *unused, BAddr local_addr, BAddr remote_add
 
     char const *source_name = (udp_mode == UdpModeUdpgw) ? "udpgw" : "SOCKS UDP";
     
+#ifndef BADVPN_LINUX
     int packet_length = 0;
+#endif
     
     switch (local_addr.type) {
         case BADDR_TYPE_IPV4: {
@@ -2047,11 +2183,23 @@ void udp_send_packet_to_device (void *unused, BAddr local_addr, BAddr remote_add
             udph.checksum = hton16(0);
             udph.checksum = udp_checksum(&udph, data, data_len, iph.source_address, iph.destination_address);
             
+#ifdef BADVPN_LINUX
+            struct iovec iov[3];
+            iov[0].iov_base = &iph;
+            iov[0].iov_len = sizeof(iph);
+            iov[1].iov_base = &udph;
+            iov[1].iov_len = sizeof(udph);
+            iov[2].iov_base = (void *)data;
+            iov[2].iov_len = (size_t)data_len;
+            BTap_SendV(&device, iov, 3);
+            return;
+#else
             // write packet
             memcpy(device_write_buf, &iph, sizeof(iph));
             memcpy(device_write_buf + sizeof(iph), &udph, sizeof(udph));
             memcpy(device_write_buf + sizeof(iph) + sizeof(udph), data, data_len);
             packet_length = sizeof(iph) + sizeof(udph) + data_len;
+#endif
         } break;
         
         case BADDR_TYPE_IPV6: {
@@ -2088,14 +2236,28 @@ void udp_send_packet_to_device (void *unused, BAddr local_addr, BAddr remote_add
             udph.checksum = hton16(0);
             udph.checksum = udp_ip6_checksum(&udph, data, data_len, iph.source_address, iph.destination_address);
             
+#ifdef BADVPN_LINUX
+            struct iovec iov[3];
+            iov[0].iov_base = &iph;
+            iov[0].iov_len = sizeof(iph);
+            iov[1].iov_base = &udph;
+            iov[1].iov_len = sizeof(udph);
+            iov[2].iov_base = (void *)data;
+            iov[2].iov_len = (size_t)data_len;
+            BTap_SendV(&device, iov, 3);
+            return;
+#else
             // write packet
             memcpy(device_write_buf, &iph, sizeof(iph));
             memcpy(device_write_buf + sizeof(iph), &udph, sizeof(udph));
             memcpy(device_write_buf + sizeof(iph) + sizeof(udph), data, data_len);
             packet_length = sizeof(iph) + sizeof(udph) + data_len;
+#endif
         } break;
     }
     
+#ifndef BADVPN_LINUX
     // submit packet
     BTap_Send(&device, device_write_buf, packet_length);
+#endif
 }

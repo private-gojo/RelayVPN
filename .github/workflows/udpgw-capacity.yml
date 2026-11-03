@@ -1,0 +1,117 @@
+name: UDPGW Capacity
+
+on:
+  push:
+    branches:
+      - codex/ipv6-udp-extension-support
+  workflow_dispatch:
+    inputs:
+      max_clients:
+        description: Maximum concurrent UDPGW TCP sessions
+        required: true
+        type: choice
+        default: '10000'
+        options:
+          - '10000'
+          - '25000'
+          - '50000'
+          - '100000'
+      max_mappings:
+        description: Maximum active UDPGW UDP mappings (tested at UDP MTU 1500)
+        required: true
+        type: choice
+        default: '1000'
+        options:
+          - '1000'
+          - '10000'
+          - '25000'
+          - '50000'
+          - '100000'
+  schedule:
+    - cron: '23 3 * * 1'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: udpgw-capacity-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  capacity:
+    name: UDPGW adaptive capacity
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      MAX_CLIENTS: ${{ github.event_name == 'push' && '100000' || inputs.max_clients || '10000' }}
+      MAX_MAPPINGS: ${{ github.event_name == 'push' && contains(github.event.head_commit.message, '[capacity-100k]') && '100000' || github.event_name == 'push' && contains(github.event.head_commit.message, '[one-client-10k]') && '10000' || github.event_name == 'push' && '1000' || inputs.max_mappings || '1000' }}
+      ONE_CLIENT_PER_MAPPING: ${{ github.event_name == 'push' && contains(github.event.head_commit.message, '[one-client-10k]') }}
+      RUN_MTU_SWEEP: ${{ github.event_name == 'push' && contains(github.event.head_commit.message, '[mtu-sweep]') }}
+    steps:
+      - name: Checkout RelayVPN
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version: '1.27.x'
+
+      - name: Install build tools
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y build-essential cmake
+
+      - name: Build BadVPN UDPGW
+        run: |
+          set -euo pipefail
+          cmake -S . -B "$RUNNER_TEMP/relayvpn-capacity-build" \
+            -G "Unix Makefiles" \
+            -DBUILD_NOTHING_BY_DEFAULT=ON \
+            -DBUILD_UDPGW=ON
+          cmake --build "$RUNNER_TEMP/relayvpn-capacity-build" \
+            --target badvpn-udpgw --parallel 2
+
+      - name: Run adaptive capacity measurement
+        run: |
+          set -euo pipefail
+          GO111MODULE=off go test -race ./tests/udpgw-capacity ./tests/udpgw-data-plane
+          sudo prlimit --pid "$BASHPID" --nofile=200256:200256
+          ulimit -n 200256
+          ulimit -Sn
+          go run ./tests/udpgw-capacity/main.go \
+            --binary "$RUNNER_TEMP/relayvpn-capacity-build/udpgw/badvpn-udpgw" \
+            --max-clients "$MAX_CLIENTS" \
+            --hold 2s \
+            --report "$RUNNER_TEMP/udpgw-capacity.json"
+          DATA_PLANE_ARGS=()
+          if [[ "$ONE_CLIENT_PER_MAPPING" == "true" ]]; then
+            DATA_PLANE_ARGS+=(--one-client-per-mapping)
+          fi
+          GO111MODULE=off go build -o "$RUNNER_TEMP/udpgw-data-plane" ./tests/udpgw-data-plane
+          "$RUNNER_TEMP/udpgw-data-plane" \
+            --binary "$RUNNER_TEMP/relayvpn-capacity-build/udpgw/badvpn-udpgw" \
+            --mappings "$MAX_MAPPINGS" \
+            --udp-mtu 1500 \
+            --payload-size 1200 \
+            "${DATA_PLANE_ARGS[@]}" \
+            --report "$RUNNER_TEMP/udpgw-data-plane.json"
+          if [[ "$RUN_MTU_SWEEP" == "true" ]]; then
+            bash tests/udpgw-data-plane/mtu-memory-sweep.sh \
+              "$RUNNER_TEMP/relayvpn-capacity-build/udpgw/badvpn-udpgw" \
+              "$RUNNER_TEMP/udpgw-data-plane" \
+              1000 \
+              "$RUNNER_TEMP/udpgw-mtu-sweep"
+          fi
+
+      - name: Upload capacity report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: udpgw-capacity-${{ github.run_number }}
+          path: |
+            ${{ runner.temp }}/udpgw-capacity.json
+            ${{ runner.temp }}/udpgw-data-plane.json
+            ${{ runner.temp }}/udpgw-mtu-sweep/**
+          if-no-files-found: warn
+          retention-days: 30
