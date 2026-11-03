@@ -22,7 +22,7 @@ jobs:
         run: |
           set -euo pipefail
           sudo apt-get update
-          sudo apt-get install -y build-essential cmake iproute2 iputils-ping python3
+          sudo apt-get install -y build-essential cmake gdb iproute2 iputils-ping python3
           sudo modprobe tun || true
           test -c /dev/net/tun
           ulimit -n 65535
@@ -125,6 +125,10 @@ jobs:
             local flows="$3"
             local expected="$4"
             local config="$ROOT/$label.yml"
+            local log_level=info
+            if [[ "$label" == "session-limit-1" ]]; then
+              log_level=debug
+            fi
 
             echo "--- $label: max-session-count=$limit flows=$flows expected=$expected ---"
             cat > "$config" <<EOF
@@ -139,15 +143,20 @@ jobs:
             udp: 'udp'
           misc:
             log-file: stderr
-            log-level: info
+            log-level: $log_level
             connect-timeout: 10000
             udp-read-write-timeout: 120000
             max-session-count: $limit
             limit-nofile: 65535
           EOF
 
-            sudo bash -c 'ulimit -n 65535; exec ip netns exec cli "$1" "$2"' \
-              _ "$HEV_BIN" "$config" > "$ROOT/logs/$label-hev.log" 2>&1 &
+            if [[ "$label" == "session-limit-1" ]]; then
+              sudo bash -c 'ulimit -n 65535; exec ip netns exec cli gdb --batch --return-child-result -ex run -ex "thread apply all bt full" --args "$1" "$2"' \
+                _ "$HEV_BIN" "$config" > "$ROOT/logs/$label-hev.log" 2>&1 &
+            else
+              sudo bash -c 'ulimit -n 65535; exec ip netns exec cli "$1" "$2"' \
+                _ "$HEV_BIN" "$config" > "$ROOT/logs/$label-hev.log" 2>&1 &
+            fi
             HEV_PID=$!
 
             for i in $(seq 1 45); do
