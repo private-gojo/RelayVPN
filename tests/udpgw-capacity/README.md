@@ -72,7 +72,7 @@ bash tests/udpgw-data-plane/mtu-memory-sweep.sh \
 
 The sweep runs 1,000 active mappings at UDP MTUs 576, 1200, 1500, 4096, 8192, 16384, 32768, and 65514. Payload is 512 bytes at MTU 576, 1000 bytes at MTU 1200, and 1200 bytes at the larger MTUs. Each profile starts a fresh UDPGW process and writes an individual JSON report plus a Markdown summary. This isolates process RSS/HWM per MTU; it does not alter the production default.
 
-The [mtu-sweep] capacity-workflow push profile runs this matrix after its normal 100k TCP-session and active-mapping checks.
+The [mtu-sweep] capacity-workflow push profile runs this matrix after its normal 100k TCP-session and active-mapping checks. A push commit containing the [mtu-sweep] marker in its message enables the profile.
 
 ## Measurement boundary
 
