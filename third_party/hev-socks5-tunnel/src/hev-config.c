@@ -439,7 +439,7 @@ hev_config_parse_misc (yaml_document_t *doc, yaml_node_t *base)
             count = strtol (value, &end, 10);
             if (errno || end == value || *end || count < 0 ||
                 count > INT_MAX) {
-                fprintf (stderr, "Invalid max-session-count (0..%d)\\n",
+                fprintf (stderr, "Invalid max-session-count (0..%d)\n",
                          INT_MAX);
                 return -1;
             }
