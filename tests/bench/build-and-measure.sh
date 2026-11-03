@@ -124,9 +124,7 @@ python3 "$GITHUB_WORKSPACE/tests/bench/measure.py" \
   --manifest "$MANIFEST" \
   --work-dir "$RUNNER_TEMP/phase2e-lab" \
   --artifact-dir "$ARTIFACT_DIR" \
-  --mode resume \
-  --resume-from "$GITHUB_WORKSPACE/phase2e-previous" \
-  --source-run-id "$PHASE2E_SOURCE_RUN_ID"
+  --mode all
 python3 "$GITHUB_WORKSPACE/tests/bench/summarize.py" \
   --manifest "$MANIFEST" \
   --artifact-dir "$ARTIFACT_DIR"
