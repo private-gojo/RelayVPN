@@ -49,12 +49,16 @@ func TestValidatePayloadDetectsCorruption(t *testing.T) {
 
 func TestLatencyStats(t *testing.T) {
 	sessions := []*session{
-		{latency: [2][]uint64{[]uint64{10, 20}, []uint64{40, 50}}},
-		{latency: [2][]uint64{[]uint64{30}, []uint64{60}}},
+		{maps: make([]mapping, 2), latency: [2][]uint64{[]uint64{10, 20}, []uint64{40, 50}}},
+		{maps: make([]mapping, 1), latency: [2][]uint64{[]uint64{30}, []uint64{60}}},
 	}
-	p50, p95, p99, maximum := latencyStats(sessions, 1, 3)
+	p50, p95, p99, maximum := latencyStats(sessions, 1, 0, 3)
 	if p50 != 20 || p95 != 30 || p99 != 30 || maximum != 30 {
 		t.Fatalf("latency stats = %d/%d/%d/%d, want 20/30/30/30", p50, p95, p99, maximum)
+	}
+	p50, p95, p99, maximum = latencyStats(sessions, 1, 2, 3)
+	if p50 != 30 || p95 != 30 || p99 != 30 || maximum != 30 {
+		t.Fatalf("range latency stats = %d/%d/%d/%d, want 30/30/30/30", p50, p95, p99, maximum)
 	}
 }
 
