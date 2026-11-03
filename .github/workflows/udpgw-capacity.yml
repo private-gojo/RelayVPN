@@ -88,7 +88,7 @@ jobs:
           if [[ "$ONE_CLIENT_PER_MAPPING" == "true" ]]; then
             DATA_PLANE_ARGS+=(--one-client-per-mapping)
           fi
-          go build -o "$RUNNER_TEMP/udpgw-data-plane" ./tests/udpgw-data-plane
+          GO111MODULE=off go build -o "$RUNNER_TEMP/udpgw-data-plane" ./tests/udpgw-data-plane
           "$RUNNER_TEMP/udpgw-data-plane" \
             --binary "$RUNNER_TEMP/relayvpn-capacity-build/udpgw/badvpn-udpgw" \
             --mappings "$MAX_MAPPINGS" \
