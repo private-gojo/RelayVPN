@@ -35,8 +35,7 @@ func TestPacketEncoding(t *testing.T) {
 }
 
 func TestKeepaliveEncoding(t *testing.T) {
-	got := []byte{3, 0, 1, 0, 0}
-	if !reflect.DeepEqual(got, []byte{3, 0, 1, 0, 0}) {
+	if got := keepaliveFrame(); !reflect.DeepEqual(got, []byte{3, 0, 1, 0, 0}) {
 		t.Fatalf("keepalive frame = %v", got)
 	}
 }
