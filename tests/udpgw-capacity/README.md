@@ -46,7 +46,12 @@ This benchmark creates real UDPGW mappings against eight local UDP echo endpoint
 For a combined TCP-client plus UDP-mapping profile, run up to 10,000 clients with one active mapping each:
 
 ~~~sh
-go run ./tests/udpgw-data-plane/main.go \\\n  --binary ./build/udpgw/badvpn-udpgw \\\n  --mappings 10000 \\\n  --one-client-per-mapping \\\n  --udp-mtu 1500 \\\n  --payload-size 1200
+go run ./tests/udpgw-data-plane/main.go \
+  --binary ./build/udpgw/badvpn-udpgw \
+  --mappings 10000 \
+  --one-client-per-mapping \
+  --udp-mtu 1500 \
+  --payload-size 1200
 ~~~
 
 
