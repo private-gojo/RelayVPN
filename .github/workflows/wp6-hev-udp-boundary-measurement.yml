@@ -278,6 +278,7 @@ jobs:
           fi
           run_case udp-high-flow-1025 0 1025 1025
           run_case udp-ipv6-single-flow 0 1 1 1 0 64 0 10 1500 12 1 1 6
+          run_case udp-over-tcp-single-flow 0 1 1 1 0 64 0 10 1500 12 1 1 4 tcp
 
           {
             echo ""
