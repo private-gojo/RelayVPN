@@ -350,9 +350,24 @@ int main (int argc, char **argv)
     }
     
     // init TUN device
-    if (!BTap_Init(&device, &ss, options.tundev, device_error_handler, NULL, 1)) {
-        BLog(BLOG_ERROR, "BTap_Init failed");
-        goto fail3;
+#ifndef BADVPN_USE_WINAPI
+    if (options.use_tunfd) {
+        struct BTap_init_data init_data;
+        init_data.dev_type = BTAP_DEV_TUN;
+        init_data.init_type = BTAP_INIT_FD;
+        init_data.init.fd.fd = options.tunfd;
+        init_data.init.fd.mtu = options.tunmtu;
+        if (!BTap_Init2(&device, &ss, init_data, device_error_handler, NULL)) {
+            BLog(BLOG_ERROR, "BTap_Init2 failed");
+            goto fail3;
+        }
+    } else
+#endif
+    {
+        if (!BTap_Init(&device, &ss, options.tundev, device_error_handler, NULL, 1)) {
+            BLog(BLOG_ERROR, "BTap_Init failed");
+            goto fail3;
+        }
     }
     
     // NOTE: the order of the following is important:
