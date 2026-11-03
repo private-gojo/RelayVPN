@@ -253,6 +253,7 @@ func startServer(binary string, clients, mtu int) (*exec.Cmd, int, string, <-cha
 		"--max-clients", strconv.Itoa(clients),
 		"--max-connections-for-client", "65536",
 		"--udp-mtu", strconv.Itoa(mtu),
+		"--local-udp-addrs", "127.0.0.1:10000", "20000",
 		"--client-socket-sndbuf", "0", "--loglevel", "error")
 	cmd.Stdout, cmd.Stderr = os.Stdout, os.Stderr
 	if err := cmd.Start(); err != nil { return nil, 0, "", nil, err }
