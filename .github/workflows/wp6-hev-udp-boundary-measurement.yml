@@ -178,6 +178,9 @@ jobs:
             sudo ip -n cli link show tun0
             sudo ip -n cli link set tun0 up
             sudo ip -n cli route replace default dev tun0
+            if [[ "$ip_version" == "6" ]]; then
+              sudo ip -n cli -6 route replace 2001:db8::/32 dev tun0
+            fi
 
             if sudo bash -c 'ulimit -n 65535; exec ip netns exec cli python3 "$@"' \
               _ "$CLIENT" --flows "$flows" --expected "$expected" \
