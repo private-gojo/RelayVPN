@@ -268,6 +268,12 @@ jobs:
           run_case udp-datagram-1747-truncated 0 1 0 1 0 64 0 10 2000 1747 1 1
           run_case unlimited-small 0 16 16
           run_case session-limit-1 1 1 1
+          run_case session-limit-1-overflow 1 2 1 1 0 1 500 10 1500 12 2 2
+          if ! grep -q "WP6_SESSION_EVICT active=1 limit=1" \
+            "$ROOT/logs/session-limit-1-overflow-hev.log"; then
+            echo "session cap overrun did not observe eviction at max=1" >&2
+            FAILURES+=("session cap eviction instrumentation not observed")
+          fi
           run_case session-limit-2 2 2 2
           run_case session-limit-130 130 130 130
           run_case udp-queue-512-boundary 0 1 512 640 0 1024 0
