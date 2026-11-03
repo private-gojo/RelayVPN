@@ -128,6 +128,7 @@ jobs:
             local pause_ms="${6:-0}"
             local send_batch_size="${7:-64}"
             local send_batch_delay_ms="${8:-50}"
+            local udp_copy_buffer_nums="${9:-10}"
             local config="$ROOT/$label.yml"
 
             echo "--- $label: max-session-count=$limit flows=$flows expected=$expected ---"
@@ -146,6 +147,7 @@ jobs:
             log-level: info
             connect-timeout: 10000
             udp-read-write-timeout: 120000
+            udp-copy-buffer-nums: $udp_copy_buffer_nums
             max-session-count: $limit
             limit-nofile: 65535
           EOF
@@ -215,6 +217,38 @@ jobs:
               >> "$GITHUB_STEP_SUMMARY"
           }
 
+          check_invalid_udp_copy_buffer_count() {
+            local value="$1"
+            local label="udp-copy-buffer-invalid-$value"
+            local config="$ROOT/$label.yml"
+            local log="$ROOT/logs/$label-hev.log"
+            local status
+
+            cat > "$config" <<EOF
+          misc:
+            udp-copy-buffer-nums: "$value"
+          EOF
+
+            set +e
+            sudo ip netns exec cli "$HEV_BIN" "$config" > "$log" 2>&1
+            status=$?
+            set -e
+
+            if [[ "$status" -eq 0 ]] || ! grep -q "Invalid udp-copy-buffer-nums" "$log"; then
+              echo "$label was not rejected by config validation" >&2
+              cat "$log"
+              FAILURES+=("$label validation failed")
+            fi
+          }
+
+          check_invalid_udp_copy_buffer_count 0
+          check_invalid_udp_copy_buffer_count -1
+          check_invalid_udp_copy_buffer_count 65
+          check_invalid_udp_copy_buffer_count 99999999999999999999999999
+          check_invalid_udp_copy_buffer_count 1x
+
+          run_case udp-copy-buffer-1 0 1 1 1 0 64 0 1
+          run_case udp-copy-buffer-64 0 1 1 1 0 64 0 64
           run_case unlimited-small 0 16 16
           run_case session-limit-1 1 1 1
           run_case session-limit-2 2 2 2
@@ -232,6 +266,7 @@ jobs:
             echo "### Interpretation"
             echo "- Session cap cases record the current source behavior: configured N permits up to N surviving sessions; excess sessions are evicted."
             echo "- The queue case submits 640 datagrams in one burst through one UDP flow; the WP6 test build raises TUN_READ_BATCH to let the per-session queue reach its configured boundary."
+            echo "- UDP copy-buffer counts 1 and 64 are accepted; zero, negative, oversized, overflow, and malformed values are rejected before tunnel initialization."
             echo "- The 1,025-flow case is a high-flow smoke measurement; lwIP uses heap-backed UDP PCBs (MEMP_MEM_MALLOC=1), so MEMP_NUM_UDP_PCB is not a hard cap in this build."
           } >> "$GITHUB_STEP_SUMMARY"
 
