@@ -1,0 +1,210 @@
+name: WP6 - Hev UDP session and PCB boundaries
+
+on:
+  push:
+    branches:
+      - phase-wp6/hev-udp-boundary-measurement
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  hev-udp-boundaries:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+
+    steps:
+      - name: Checkout RelayVPN
+        uses: actions/checkout@v4
+
+      - name: Install runtime tools
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y build-essential cmake iproute2 iputils-ping python3
+          sudo modprobe tun || true
+          test -c /dev/net/tun
+          ulimit -n 65535
+
+      - name: Verify network namespace support
+        run: |
+          set -euo pipefail
+          sudo ip netns add rvchk
+          sudo ip netns del rvchk
+          sudo ip link add rvchk type dummy
+          sudo ip link del rvchk
+
+      - name: Build standalone Hev executable
+        run: |
+          set -euo pipefail
+          cmake -S . -B "$RUNNER_TEMP/relayvpn-wp6-hev-build" \
+            -G "Unix Makefiles" \
+            -DBUILD_HEV=ON \
+            -DBUILD_TUN2SOCKS=OFF \
+            -DBUILD_CLIENT=OFF \
+            -DBUILD_SERVER=OFF \
+            -DBUILD_FLOODER=OFF \
+            -DBUILD_EXAMPLES=OFF \
+            -DBUILD_TESTS=OFF \
+            -DBUILD_NCD=OFF \
+            -DBUILD_UDPGW=OFF \
+            -DBUILD_DOSTEST=OFF
+          cmake --build "$RUNNER_TEMP/relayvpn-wp6-hev-build" --target hev-bin --parallel 2
+          test -x third_party/hev-socks5-tunnel/bin/hev-socks5-tunnel
+
+      - name: Run session-count and UDP PCB boundary measurements
+        shell: bash
+        run: |
+          set -euo pipefail
+          ROOT="$RUNNER_TEMP/wp6-hev"
+          HEV_BIN="$GITHUB_WORKSPACE/third_party/hev-socks5-tunnel/bin/hev-socks5-tunnel"
+          CLIENT="$GITHUB_WORKSPACE/tests/hev-udp-boundary-client.py"
+          ARTIFACT_DIR="$GITHUB_WORKSPACE/phase-wp6-hev-artifacts"
+          mkdir -p "$ROOT/logs" "$ARTIFACT_DIR"
+          ulimit -n 65535
+
+          HEV_PID=""
+          PROXY_PID=""
+
+          cleanup() {
+            set +e
+            if [[ -n "$HEV_PID" ]] && sudo kill -0 "$HEV_PID" 2>/dev/null; then
+              sudo kill -TERM "$HEV_PID" 2>/dev/null
+              wait "$HEV_PID" 2>/dev/null
+            fi
+            if [[ -n "$PROXY_PID" ]] && kill -0 "$PROXY_PID" 2>/dev/null; then
+              kill "$PROXY_PID" 2>/dev/null
+              wait "$PROXY_PID" 2>/dev/null
+            fi
+            cp -a "$ROOT/logs/." "$ARTIFACT_DIR/" 2>/dev/null
+            sudo ip link del veth-root 2>/dev/null
+            sudo ip addr del 198.51.100.10/32 dev lo 2>/dev/null
+            sudo ip netns del cli 2>/dev/null
+          }
+          trap cleanup EXIT
+
+          sudo ip netns add cli
+          sudo ip link add veth-root type veth peer name veth-cli
+          sudo ip link set veth-cli netns cli
+          sudo ip addr add 10.200.0.1/30 dev veth-root
+          sudo ip link set veth-root up
+          sudo ip -n cli addr add 10.200.0.2/30 dev veth-cli
+          sudo ip -n cli link set lo up
+          sudo ip -n cli link set veth-cli up
+          sudo ip addr add 198.51.100.10/32 dev lo
+
+          HEV_BOUNDARY_PROXY_HOST=10.200.0.1 \
+            python3 tests/hev-udp-boundary-proxy.py > "$ROOT/logs/proxy.log" 2>&1 &
+          PROXY_PID=$!
+
+          for i in $(seq 1 30); do
+            if timeout 1 bash -c '</dev/tcp/10.200.0.1/1080' 2>/dev/null && \
+               timeout 1 bash -c '</dev/tcp/10.200.0.1/1082' 2>/dev/null; then
+              break
+            fi
+            sleep 1
+          done
+          kill -0 "$PROXY_PID"
+          ss -lnt | grep -E '10.200.0.1:(1080|1082)'
+          ss -lnu | grep '10.200.0.1:1081'
+
+          run_case() {
+            local label="$1"
+            local limit="$2"
+            local flows="$3"
+            local expected="$4"
+            local config="$ROOT/$label.yml"
+
+            echo "--- $label: max-session-count=$limit flows=$flows expected=$expected ---"
+            cat > "$config" <<EOF
+          tunnel:
+            name: tun0
+            mtu: 1500
+            ipv4: 198.18.0.1
+            icmp: 'off'
+          socks5:
+            address: 10.200.0.1
+            port: 1080
+            udp: 'udp'
+          misc:
+            log-file: stderr
+            log-level: info
+            connect-timeout: 10000
+            udp-read-write-timeout: 30000
+            max-session-count: $limit
+            limit-nofile: 65535
+          EOF
+
+            sudo bash -c 'ulimit -n 65535; exec ip netns exec cli "$1" "$2"' \
+              _ "$HEV_BIN" "$config" > "$ROOT/logs/$label-hev.log" 2>&1 &
+            HEV_PID=$!
+
+            for i in $(seq 1 45); do
+              if sudo ip -n cli link show tun0 >/dev/null 2>&1; then
+                break
+              fi
+              if ! sudo kill -0 "$HEV_PID" 2>/dev/null; then
+                cat "$ROOT/logs/$label-hev.log"
+                return 1
+              fi
+              sleep 1
+            done
+
+            sudo ip -n cli link show tun0
+            sudo ip -n cli link set tun0 up
+            sudo ip -n cli route replace default dev tun0
+
+            sudo bash -c 'ulimit -n 65535; exec ip netns exec cli python3 "$@"' \
+              _ "$CLIENT" --flows "$flows" --expected "$expected" \
+              --wait-target "$expected" --timeout-ms 20000 \
+              --settle-ms 2000 --response-seconds 6
+
+            sudo kill -TERM "$HEV_PID"
+            set +e
+            wait "$HEV_PID"
+            local status=$?
+            set -e
+            echo "$label hev_exit_status=$status"
+            test "$status" -eq 0
+            HEV_PID=""
+
+            for i in $(seq 1 20); do
+              if ! sudo ip -n cli link show tun0 >/dev/null 2>&1; then
+                break
+              fi
+              sleep 1
+            done
+            if sudo ip -n cli link show tun0 >/dev/null 2>&1; then
+              echo "tun0 still exists after $label" >&2
+              return 1
+            fi
+
+            echo "- $label: expected $expected responders from $flows flows (max-session-count=$limit)" \
+              >> "$GITHUB_STEP_SUMMARY"
+          }
+
+          run_case unlimited-small 0 16 16
+          run_case session-limit-1 1 1 0
+          run_case session-limit-2 2 2 1
+          run_case session-limit-130 130 130 129
+          run_case udp-pcb-pool 0 1025 1023
+
+          {
+            echo ""
+            echo "### Interpretation"
+            echo "- Session cap cases record the current source behavior: configured N yields N-1 surviving sessions."
+            echo "- The PCB case checks the 1,024-entry lwIP UDP PCB pool with one listener reserved."
+            echo "- Queue 512/513 measurement is deferred: the current drop path has no exposed counter/high-water mark, so a packet flood alone cannot prove the internal queue boundary without adding test instrumentation."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          cp -a "$ROOT/logs/." "$ARTIFACT_DIR/"
+
+      - name: Upload WP6 measurement artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: relayvpn-wp6-hev-udp-boundary-results
+          path: phase-wp6-hev-artifacts/
+          if-no-files-found: warn
+          retention-days: 30
