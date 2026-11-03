@@ -19,6 +19,7 @@ def main():
 
     tun_bin = sys.argv[1]
     tun_fd = os.open("/dev/net/tun", os.O_RDWR | os.O_CLOEXEC)
+    original_flags = fcntl.fcntl(tun_fd, fcntl.F_GETFL)
     process = None
 
     try:
@@ -63,7 +64,13 @@ def main():
             raise RuntimeError(f"tun2socks graceful shutdown returned {return_code}:\\n{output}")
 
         os.fstat(tun_fd)
-        print("PASS: inherited TUN FD startup, nonblocking mode, and caller ownership")
+        restored_flags = fcntl.fcntl(tun_fd, fcntl.F_GETFL)
+        if restored_flags != original_flags:
+            raise RuntimeError(
+                f"TUN FD status flags changed across shutdown: "
+                f"before={original_flags:#x} after={restored_flags:#x}"
+            )
+        print("PASS: inherited TUN FD startup, nonblocking mode, flag restoration, and caller ownership")
     finally:
         if process is not None:
             process.kill()

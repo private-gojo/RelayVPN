@@ -322,6 +322,7 @@ fail0:
     #if defined(BADVPN_LINUX) || defined(BADVPN_FREEBSD)
     
     o->close_fd = (init_data.init_type != BTAP_INIT_FD);
+    o->restore_fd_flags = 0;
     
     switch (init_data.init_type) {
         case BTAP_INIT_FD: {
@@ -435,7 +436,15 @@ fail0:
         
     // set non-blocking without discarding existing file status flags
     int fd_flags = fcntl(o->fd, F_GETFL);
-    if (fd_flags < 0 || fcntl(o->fd, F_SETFL, fd_flags | O_NONBLOCK) < 0) {
+    if (fd_flags < 0) {
+        BLog(BLOG_ERROR, "cannot get file status flags");
+        goto fail1;
+    }
+    if (!o->close_fd) {
+        o->fd_original_flags = fd_flags;
+        o->restore_fd_flags = 1;
+    }
+    if (fcntl(o->fd, F_SETFL, fd_flags | O_NONBLOCK) < 0) {
         BLog(BLOG_ERROR, "cannot set non-blocking");
         goto fail1;
     }
@@ -451,6 +460,10 @@ fail0:
     goto success;
     
 fail1:
+    if (o->restore_fd_flags) {
+        fcntl(o->fd, F_SETFL, o->fd_original_flags);
+        o->restore_fd_flags = 0;
+    }
     if (o->close_fd) {
         ASSERT_FORCE(close(o->fd) == 0)
     }
@@ -504,6 +517,12 @@ void BTap_Free (BTap *o)
     // free BFileDescriptor
     BReactor_RemoveFileDescriptor(o->reactor, &o->bfd);
     
+    if (o->restore_fd_flags) {
+        if (fcntl(o->fd, F_SETFL, o->fd_original_flags) < 0) {
+            BLog(BLOG_WARNING, "cannot restore file status flags");
+        }
+        o->restore_fd_flags = 0;
+    }
     if (o->close_fd) {
         // close file descriptor
         ASSERT_FORCE(close(o->fd) == 0)

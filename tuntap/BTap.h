@@ -80,6 +80,8 @@ typedef struct {
 #else
     int close_fd;
     int fd;
+    int fd_original_flags;
+    int restore_fd_flags;
     BFileDescriptor bfd;
     int poll_events;
 #endif
