@@ -424,7 +424,7 @@ hev_config_parse_misc (yaml_document_t *doc, yaml_node_t *base)
             count = strtol (value, &end, 10);
             if (errno || end == value || *end ||
                 count < 1 || count > UDP_COPY_BUFFER_NUMS_MAX) {
-                fprintf (stderr, "Invalid udp-copy-buffer-nums (1..%d)\\n",
+                fprintf (stderr, "Invalid udp-copy-buffer-nums (1..%d)\n",
                          UDP_COPY_BUFFER_NUMS_MAX);
                 return -1;
             }
