@@ -33,6 +33,7 @@ def main():
     parser.add_argument("--timeout-ms", type=int, default=20000)
     parser.add_argument("--settle-ms", type=int, default=2000)
     parser.add_argument("--response-seconds", type=float, default=6.0)
+    parser.add_argument("--packets-per-flow", type=int, default=1)
     parser.add_argument("--send-batch-size", type=int, default=64)
     parser.add_argument("--send-batch-delay-ms", type=float, default=25.0)
     args = parser.parse_args()
@@ -41,6 +42,8 @@ def main():
         raise SystemExit("invalid flow or expected count")
     if args.send_batch_size < 1 or args.send_batch_delay_ms < 0:
         raise SystemExit("invalid send pacing settings")
+    if args.packets_per_flow < 1 or args.expected > args.flows * args.packets_per_flow:
+        raise SystemExit("invalid packet count")
 
     reset = control_command("RESET")
     if reset != "OK RESET":
@@ -50,27 +53,36 @@ def main():
     sockets = []
     send_errors = []
     responses = set()
+    total_packets = args.flows * args.packets_per_flow
 
     try:
         for index in range(args.flows):
             sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
             sock.setblocking(False)
+            sock.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 4 * 1024 * 1024)
             sock.bind(("0.0.0.0", 0))
             selector.register(sock, selectors.EVENT_READ, index)
             sockets.append(sock)
 
+        sent = 0
         for index, sock in enumerate(sockets):
-            payload = PAYLOAD_PREFIX + index.to_bytes(4, "big")
-            try:
-                sock.sendto(payload, (DEST_HOST, DEST_PORT_BASE + index))
-            except OSError as exc:
-                send_errors.append((index, str(exc)))
-            if (
-                (index + 1) % args.send_batch_size == 0
-                and index + 1 < args.flows
-                and args.send_batch_delay_ms > 0
-            ):
-                time.sleep(args.send_batch_delay_ms / 1000)
+            for sequence in range(args.packets_per_flow):
+                payload = (
+                    PAYLOAD_PREFIX
+                    + index.to_bytes(4, "big")
+                    + sequence.to_bytes(4, "big")
+                )
+                try:
+                    sock.sendto(payload, (DEST_HOST, DEST_PORT_BASE + index))
+                except OSError as exc:
+                    send_errors.append((index, sequence, str(exc)))
+                sent += 1
+                if (
+                    sent % args.send_batch_size == 0
+                    and sent < total_packets
+                    and args.send_batch_delay_ms > 0
+                ):
+                    time.sleep(args.send_batch_delay_ms / 1000)
 
         result = control_command(
             f"WAIT {args.wait_target} {args.timeout_ms} {args.settle_ms}"
@@ -87,24 +99,42 @@ def main():
                     data, _ = key.fileobj.recvfrom(4096)
                 except BlockingIOError:
                     continue
-                if len(data) >= 8 and data[:4] == PAYLOAD_PREFIX:
+                if len(data) >= 12 and data[:4] == PAYLOAD_PREFIX:
                     index = int.from_bytes(data[4:8], "big")
-                    if 0 <= index < args.flows:
-                        responses.add(index)
+                    sequence = int.from_bytes(data[8:12], "big")
+                    if 0 <= index < args.flows and sequence < args.packets_per_flow:
+                        responses.add((index, sequence))
 
-        missing = sorted(set(range(args.flows)) - responses)
+        if args.expected == total_packets:
+            expected_ids = {
+                (index, sequence)
+                for index in range(args.flows)
+                for sequence in range(args.packets_per_flow)
+            }
+        elif args.flows == 1:
+            expected_ids = {(0, sequence) for sequence in range(args.expected)}
+        else:
+            expected_ids = set()
+        missing = sorted(expected_ids - responses)
         print(
             "BOUNDARY_RESULT "
-            f"flows={args.flows} proxy_records={recorded} "
+            f"flows={args.flows} packets_per_flow={args.packets_per_flow} "
+            f"sent={sent} proxy_records={recorded} "
             f"responses={len(responses)} expected={args.expected} "
             f"send_errors={len(send_errors)} missing={missing[:20]}"
         )
+        if recorded != args.expected:
+            raise SystemExit(
+                f"proxy record mismatch: expected {args.expected}, got {recorded}"
+            )
         if send_errors:
             print(f"SEND_ERRORS {send_errors[:10]}")
         if len(responses) != args.expected:
             raise SystemExit(
-                f"boundary mismatch: expected {args.expected} responders, got {len(responses)}"
+                f"boundary mismatch: expected {args.expected} responses, got {len(responses)}"
             )
+        if expected_ids and missing:
+            raise SystemExit(f"missing expected responses: {missing[:20]}")
         print("PASS: measured responder count matches the pinned baseline")
     finally:
         for sock in sockets:
