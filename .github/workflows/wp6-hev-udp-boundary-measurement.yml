@@ -132,7 +132,7 @@ jobs:
             log-file: stderr
             log-level: info
             connect-timeout: 10000
-            udp-read-write-timeout: 30000
+            udp-read-write-timeout: 120000
             max-session-count: $limit
             limit-nofile: 65535
           EOF
