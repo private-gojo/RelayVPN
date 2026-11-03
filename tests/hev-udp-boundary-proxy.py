@@ -14,6 +14,7 @@ released = False
 relay_socket = None
 tcp_accepted = 0
 tcp_closed = 0
+tcp_udp_records = 0
 
 
 def valid_udp_packet(packet):
