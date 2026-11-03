@@ -37,7 +37,8 @@ expect_failure "$UDPGW_BIN" "--max-connections-for-client: wrong argument" --max
 expect_failure "$UDPGW_BIN" "--max-connections-for-client: wrong argument" --max-connections-for-client 256junk
 expect_failure "$UDPGW_BIN" "--max-clients: wrong argument" --max-clients 0
 expect_failure "$UDPGW_BIN" "--max-clients: wrong argument" --max-clients invalid
-expect_failure "$UDPGW_BIN" "--udp-mtu: wrong argument" --udp-mtu 65521
+expect_success_help "$UDPGW_BIN" --udp-mtu 65521
+expect_failure "$UDPGW_BIN" "--udp-mtu: wrong argument" --udp-mtu 2147483648
 expect_failure "$UDPGW_BIN" "--local-udp-addrs: wrong argument" --local-udp-addrs 127.0.0.1 65537
 
 echo "PASS: BadVPN UDPGW and tun2socks numeric CLI validation"

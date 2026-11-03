@@ -511,7 +511,7 @@ int parse_arguments (int argc, char *argv[])
                 fprintf(stderr, "%s: requires an argument\n", arg);
                 return 0;
             }
-            if (!parse_int_option(argv[i + 1], 0, DEFAULT_UDP_MTU, &options.udp_mtu)) {
+            if (!parse_int_option(argv[i + 1], 0, INT_MAX, &options.udp_mtu)) {
                 fprintf(stderr, "%s: wrong argument\n", arg);
                 return 0;
             }
