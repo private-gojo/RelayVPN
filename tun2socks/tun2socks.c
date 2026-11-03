@@ -2133,7 +2133,9 @@ void udp_send_packet_to_device (void *unused, BAddr local_addr, BAddr remote_add
 
     char const *source_name = (udp_mode == UdpModeUdpgw) ? "udpgw" : "SOCKS UDP";
     
+#ifndef BADVPN_LINUX
     int packet_length = 0;
+#endif
     
     switch (local_addr.type) {
         case BADDR_TYPE_IPV4: {
@@ -2168,11 +2170,23 @@ void udp_send_packet_to_device (void *unused, BAddr local_addr, BAddr remote_add
             udph.checksum = hton16(0);
             udph.checksum = udp_checksum(&udph, data, data_len, iph.source_address, iph.destination_address);
             
+#ifdef BADVPN_LINUX
+            struct iovec iov[3];
+            iov[0].iov_base = &iph;
+            iov[0].iov_len = sizeof(iph);
+            iov[1].iov_base = &udph;
+            iov[1].iov_len = sizeof(udph);
+            iov[2].iov_base = (void *)data;
+            iov[2].iov_len = (size_t)data_len;
+            BTap_SendV(&device, iov, 3);
+            return;
+#else
             // write packet
             memcpy(device_write_buf, &iph, sizeof(iph));
             memcpy(device_write_buf + sizeof(iph), &udph, sizeof(udph));
             memcpy(device_write_buf + sizeof(iph) + sizeof(udph), data, data_len);
             packet_length = sizeof(iph) + sizeof(udph) + data_len;
+#endif
         } break;
         
         case BADDR_TYPE_IPV6: {
@@ -2209,14 +2223,28 @@ void udp_send_packet_to_device (void *unused, BAddr local_addr, BAddr remote_add
             udph.checksum = hton16(0);
             udph.checksum = udp_ip6_checksum(&udph, data, data_len, iph.source_address, iph.destination_address);
             
+#ifdef BADVPN_LINUX
+            struct iovec iov[3];
+            iov[0].iov_base = &iph;
+            iov[0].iov_len = sizeof(iph);
+            iov[1].iov_base = &udph;
+            iov[1].iov_len = sizeof(udph);
+            iov[2].iov_base = (void *)data;
+            iov[2].iov_len = (size_t)data_len;
+            BTap_SendV(&device, iov, 3);
+            return;
+#else
             // write packet
             memcpy(device_write_buf, &iph, sizeof(iph));
             memcpy(device_write_buf + sizeof(iph), &udph, sizeof(udph));
             memcpy(device_write_buf + sizeof(iph) + sizeof(udph), data, data_len);
             packet_length = sizeof(iph) + sizeof(udph) + data_len;
+#endif
         } break;
     }
     
+#ifndef BADVPN_LINUX
     // submit packet
     BTap_Send(&device, device_write_buf, packet_length);
+#endif
 }
