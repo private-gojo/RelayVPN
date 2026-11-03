@@ -7,7 +7,6 @@ import resource
 import signal
 import socket
 import subprocess
-import sys
 import time
 
 
@@ -121,10 +120,10 @@ def main():
                 ("127.0.0.1", port), timeout=args.connect_timeout
             )
             extra.setblocking(False)
-            reject_poller = select_poll().poll()
+            reject_poller = select.poll()
             reject_poller.register(
                 extra,
-                select_poll().POLLIN | select_poll().POLLHUP | select_poll().POLLERR,
+                select.POLLIN | select.POLLHUP | select.POLLERR,
             )
             deadline = time.monotonic() + args.reject_timeout
             rejected = False
