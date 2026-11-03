@@ -16,14 +16,8 @@ on:
       - tests/bench/hold_clients.py
       - tests/bench/measure.py
   workflow_dispatch:
-    inputs:
-      source_run_id:
-        description: Workflow run containing the partial WP1 measurements
-        required: true
-        default: "41496315274"
 
 permissions:
-  actions: read
   contents: read
 
 concurrency:
@@ -32,24 +26,14 @@ concurrency:
 
 jobs:
   phase2e-benchmark:
-    name: Targeted recovery, calibration, and memory comparison
+    name: Fresh full WP1 and WP2 benchmark
     runs-on: ubuntu-latest
     timeout-minutes: 360
-    env:
-      PHASE2E_SOURCE_RUN_ID: ${{ github.event.inputs.source_run_id || '41496315274' }}
     steps:
       - name: Checkout full history
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
-
-      - name: Download previous partial measurements
-        uses: actions/download-artifact@v4
-        with:
-          name: relayvpn-phase2e-recovered
-          run-id: ${{ github.event.inputs.source_run_id || '41496315274' }}
-          github-token: ${{ secrets.GITHUB_TOKEN }}
-          path: phase2e-previous
 
       - name: Install benchmark dependencies
         run: |
@@ -92,11 +76,11 @@ jobs:
             tests/bench/test_path_stats.py
           python3 -m unittest discover -s tests/bench -p 'test_*.py' -v
 
-      - name: Build historical revisions and run targeted WP1 recovery plus WP2
+      - name: Build historical revisions and run fresh full WP1 plus WP2
         shell: bash
         run: |
           set -euo pipefail
-          sudo --preserve-env=GITHUB_WORKSPACE,RUNNER_TEMP,PHASE2E_SOURCE_RUN_ID,CCACHE_DIR,CCACHE_BASEDIR,CCACHE_MAXSIZE \
+          sudo --preserve-env=GITHUB_WORKSPACE,RUNNER_TEMP,CCACHE_DIR,CCACHE_BASEDIR,CCACHE_MAXSIZE \
             bash tests/bench/build-and-measure.sh
 
       - name: Make compiler cache readable
@@ -118,11 +102,11 @@ jobs:
         if: always()
         run: sudo chmod -R a+rX phase2e-artifacts/ 2>/dev/null || true
 
-      - name: Upload recovered measurement gate artifacts
+      - name: Upload clean measurement gate artifacts
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: relayvpn-phase2e-recovered
+          name: relayvpn-phase2e-clean
           path: phase2e-artifacts/
           if-no-files-found: warn
           retention-days: 30
