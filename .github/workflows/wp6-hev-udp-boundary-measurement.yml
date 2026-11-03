@@ -133,7 +133,10 @@ jobs:
             local payload_size="${11:-12}"
             local expected_proxy_records="${12:-$expected}"
             local wait_target="${13:-$expected}"
+            local ip_version="${14:-4}"
+            local ipv6_config=""
             local config="$ROOT/$label.yml"
+            if [[ "$ip_version" == "6" ]]; then ipv6_config="ipv6: fd00:198:18::1"; fi
 
             echo "--- $label: max-session-count=$limit flows=$flows expected=$expected ---"
             cat > "$config" <<EOF
@@ -141,6 +144,7 @@ jobs:
             name: tun0
             mtu: $mtu
             ipv4: 198.18.0.1
+            $ipv6_config
             icmp: 'off'
           socks5:
             address: 10.200.0.1
@@ -183,7 +187,8 @@ jobs:
               --wait-target "$wait_target" --timeout-ms 45000 \
               --settle-ms 2000 --response-seconds 6 \
               --send-batch-size "$send_batch_size" \
-              --send-batch-delay-ms "$send_batch_delay_ms"; then
+              --send-batch-delay-ms "$send_batch_delay_ms" \
+              --ip-version "$ip_version"; then
               echo "$label client_status=0"
             else
               local client_status=$?
