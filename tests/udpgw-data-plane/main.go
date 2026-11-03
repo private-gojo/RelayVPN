@@ -282,6 +282,60 @@ func startServer(binary string, clients, maxConnections, mtu int) (*exec.Cmd, in
 	return nil, 0, "", nil, errors.New("UDPGW listener did not become ready")
 }
 
+func dialSessions(target string, sessions []*session, workers int) error {
+	if workers < 1 { workers = 1 }
+	if workers > len(sessions) { workers = len(sessions) }
+	jobs := make(chan int)
+	var wg sync.WaitGroup
+	var firstErr error
+	var errMu sync.Mutex
+	for worker := 0; worker < workers; worker++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for index := range jobs {
+				conn, err := net.DialTimeout("tcp", target, 5*time.Second)
+				if err != nil {
+					errMu.Lock()
+					if firstErr == nil { firstErr = fmt.Errorf("connect client %d: %w", index, err) }
+					errMu.Unlock()
+					continue
+				}
+				if tcp, ok := conn.(*net.TCPConn); ok { _ = tcp.SetNoDelay(true) }
+				sessions[index].conn = conn
+				sessions[index].reader = bufio.NewReaderSize(conn, 128)
+			}
+		}()
+	}
+	for index := range sessions { jobs <- index }
+	close(jobs)
+	wg.Wait()
+	if firstErr != nil {
+		for _, current := range sessions { if current.conn != nil { _ = current.conn.Close() } }
+		return firstErr
+	}
+	return nil
+}
+
+func keepaliveSessions(ctx context.Context, sessions []*session) {
+	go func() {
+		ticker := time.NewTicker(5 * time.Second)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				for _, current := range sessions {
+					if err := writeFrames(current, keepaliveFrame()); err != nil {
+						select { case current.err <- fmt.Errorf("client keepalive: %w", err): default: }
+					}
+				}
+			}
+		}
+	}()
+}
+
 func procMetrics(pid int) metrics {
 	m := metrics{PID: pid}
 	if fds, err := os.ReadDir(filepath.Join("/proc", strconv.Itoa(pid), "fd")); err == nil { m.FD = len(fds) }
