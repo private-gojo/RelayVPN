@@ -44,6 +44,8 @@
 
 #define IPV4_PROTOCOL_IGMP 2
 #define IPV4_PROTOCOL_UDP 17
+#define IPV4_FLAG_MORE_FRAGMENTS 0x2000
+#define IPV4_FRAGMENT_OFFSET_MASK 0x1FFF
 
 B_START_PACKED
 struct ipv4_header {
@@ -68,6 +70,13 @@ B_END_PACKED
 #define IPV4_GET_IHL(_header) (((_header).version4_ihl4&0x0F)>>0)
 
 #define IPV4_MAKE_VERSION_IHL(size) (((size)/4) + (4 << 4))
+
+static int ipv4_is_fragmented (const struct ipv4_header *header)
+{
+    ASSERT(header)
+    uint16_t flags_offset = ntoh16(header->flags3_fragmentoffset13);
+    return (flags_offset & (IPV4_FLAG_MORE_FRAGMENTS | IPV4_FRAGMENT_OFFSET_MASK)) != 0;
+}
 
 static uint16_t ipv4_checksum (const struct ipv4_header *header, const char *extra, uint16_t extra_len)
 {

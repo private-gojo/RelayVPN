@@ -1197,6 +1197,11 @@ int process_device_udp_packet (uint8_t *data, int data_len)
                 goto fail;
             }
             
+            // Fragmented IPv4 UDP datagrams are not reassembled on the direct UDP path.
+            if (ipv4_is_fragmented(&ipv4_header)) {
+                goto fail;
+            }
+
             // parse UDP
             struct udp_header udp_header;
             if (!udp_check(data, data_len, &udp_header, &data, &data_len)) {
