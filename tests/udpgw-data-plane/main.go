@@ -39,8 +39,11 @@ type metrics struct {
 	FD int `json:"fd_count,omitempty"`
 	RSS uint64 `json:"rss_kib,omitempty"`
 	HWM uint64 `json:"hwm_kib,omitempty"`
+	VmSize uint64 `json:"vm_size_kib,omitempty"`
+	VmPeak uint64 `json:"vm_peak_kib,omitempty"`
+	VmData uint64 `json:"vm_data_kib,omitempty"`
+	Threads int `json:"threads,omitempty"`
 }
-
 type stage struct {
 	Mappings int `json:"mappings"`
 	BatchMappings int `json:"batch_mappings"`
@@ -393,6 +396,10 @@ func procMetrics(pid int) metrics {
 				switch f[0] {
 				case "VmRSS:": m.RSS, _ = strconv.ParseUint(f[1], 10, 64)
 				case "VmHWM:": m.HWM, _ = strconv.ParseUint(f[1], 10, 64)
+				case "VmSize:": m.VmSize, _ = strconv.ParseUint(f[1], 10, 64)
+				case "VmPeak:": m.VmPeak, _ = strconv.ParseUint(f[1], 10, 64)
+				case "VmData:": m.VmData, _ = strconv.ParseUint(f[1], 10, 64)
+				case "Threads:": m.Threads, _ = strconv.Atoi(f[1])
 				}
 			}
 		}
