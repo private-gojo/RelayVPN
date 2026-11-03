@@ -1274,8 +1274,14 @@ int process_device_udp_packet (uint8_t *data, int data_len)
             BAddr_InitIPv6(&local_addr, ipv6_header.source_address, udp_header.source_port);
             BAddr_InitIPv6(&remote_addr, ipv6_header.destination_address, udp_header.dest_port);
             
-            // TODO dns
-            is_dns = 0;
+            // Match transparent DNS requests to the configured IPv6 TUN address.
+            is_dns = (options.udpgw_transparent_dns &&
+                      !memcmp(
+                          ipv6_header.destination_address,
+                          netif_ip6addr.bytes,
+                          sizeof(netif_ip6addr.bytes)
+                      ) &&
+                      udp_header.dest_port == hton16(53));
         } break;
         
         default: {
