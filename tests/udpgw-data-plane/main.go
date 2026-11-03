@@ -567,8 +567,9 @@ func run(o options) error {
 			CompletionPPS: pps, EchoResponseMbps: mbps}
 		r.Stages = append(r.Stages, entry)
 		r.LastStable = targetCount
-		fmt.Printf("mappings=%d round_trip_ms=%d replies=%d server_rss_kib=%d server_fd=%d\n",
-			entry.Mappings, entry.RoundTripMS, entry.Responses, entry.Server.RSS, entry.Server.FD)
+		fmt.Printf("mappings=%d round_trip_ms=%d replies=%d p50_us=%d p95_us=%d p99_us=%d pps=%.1f echo_mbps=%.2f server_rss_kib=%d server_fd=%d\\n",
+			entry.Mappings, entry.RoundTripMS, entry.Responses, entry.P50LatencyUS, entry.P95LatencyUS, entry.P99LatencyUS,
+			entry.CompletionPPS, entry.EchoResponseMbps, entry.Server.RSS, entry.Server.FD)
 		previous = targetCount
 	}
 
@@ -588,9 +589,12 @@ func run(o options) error {
 	if r.EchoPackets < uint64(o.mappings*2) || r.EchoErrors != 0 {
 		return recordFailure(&r, o.mappings, 2, persistStart, c, pid, echo, fmt.Errorf("UDP echo validation failed: packets=%d expected>=%d errors=%d", r.EchoPackets, o.mappings*2, r.EchoErrors))
 	}
+	pps, mbps := throughput(int(r.PersistenceResponses), o.payloadSize, persistElapsed)
 	if err := writeReport(o.report, r); err != nil { return err }
-	fmt.Printf("PASS: active_mappings=%d clients=%d udp_mtu=%d echo_packets=%d persistence_replies=%d server_rss_kib=%d report=%s\n",
-		o.mappings, clients, o.udpMTU, r.EchoPackets, r.PersistenceResponses, procMetrics(pid).RSS, o.report)
+	fmt.Printf("PASS: active_mappings=%d clients=%d udp_mtu=%d payload=%d echo_packets=%d persistence_replies=%d p50_us=%d p95_us=%d p99_us=%d pps=%.1f echo_mbps=%.2f server_rss_kib=%d report=%s\\n",
+		o.mappings, clients, o.udpMTU, o.payloadSize, r.EchoPackets, r.PersistenceResponses,
+		r.PersistenceP50LatencyUS, r.PersistenceP95LatencyUS, r.PersistenceP99LatencyUS,
+		pps, mbps, procMetrics(pid).RSS, o.report)
 	return nil
 }
 
