@@ -84,7 +84,7 @@ async def udp_relay():
         if released:
             await loop.sock_sendto(relay_socket, packet, client)
         else:
-            records[client] = packet
+            records.setdefault(client, []).append(packet)
 
 
 async def handle_control(reader, writer):
@@ -103,11 +103,15 @@ async def handle_control(reader, writer):
             timeout_ms = max(0, int(parts[2]))
             settle_ms = max(0, int(parts[3]))
             deadline = time.monotonic() + timeout_ms / 1000
-            while len(records) < target and time.monotonic() < deadline:
+            while sum(len(packets) for packets in records.values()) < target and time.monotonic() < deadline:
                 await asyncio.sleep(0.01)
             await asyncio.sleep(settle_ms / 1000)
             released = True
-            snapshot = list(records.items())
+            snapshot = [
+                (client, packet)
+                for client, packets in records.items()
+                for packet in packets
+            ]
             loop = asyncio.get_running_loop()
             for _ in range(3):
                 for client, packet in snapshot:
