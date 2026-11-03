@@ -7,7 +7,9 @@
  ============================================================================
  */
 
+#include <errno.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <hev-sys.h>
 #include <lwip/tcp.h>
 #include <yaml.h>
@@ -414,8 +416,20 @@ hev_config_parse_misc (yaml_document_t *doc, yaml_node_t *base)
             tcp_buffer_size = strtoul (value, NULL, 10);
         else if (0 == strcmp (key, "udp-recv-buffer-size"))
             udp_recv_buffer_size = strtoul (value, NULL, 10);
-        else if (0 == strcmp (key, "udp-copy-buffer-nums"))
-            udp_copy_buffer_nums = strtoul (value, NULL, 10);
+        else if (0 == strcmp (key, "udp-copy-buffer-nums")) {
+            char *end;
+            long count;
+
+            errno = 0;
+            count = strtol (value, &end, 10);
+            if (errno || end == value || *end ||
+                count < 1 || count > UDP_COPY_BUFFER_NUMS_MAX) {
+                fprintf (stderr, "Invalid udp-copy-buffer-nums (1..%d)\\n",
+                         UDP_COPY_BUFFER_NUMS_MAX);
+                return -1;
+            }
+            udp_copy_buffer_nums = count;
+        }
         else if (0 == strcmp (key, "max-session-count"))
             max_session_count = strtoul (value, NULL, 10);
         else if (0 == strcmp (key, "connect-timeout"))
