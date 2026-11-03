@@ -163,6 +163,7 @@ btime_t last_dns_update_time;
 
 // reactor
 BReactor ss;
+int exit_status = 1;
 
 // listeners
 BListener listeners[MAX_LISTEN_ADDRS];
@@ -341,7 +342,7 @@ fail0:
     // finish debug objects
     DebugObjectGlobal_Finish();
     
-    return 1;
+    return exit_status;
 }
 
 void print_help (const char *name)
@@ -631,6 +632,7 @@ int process_arguments (void)
 
 void signal_handler (void *unused)
 {
+    exit_status = 0;
     BLog(BLOG_NOTICE, "termination requested");
     
     // exit event loop

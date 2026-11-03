@@ -57,7 +57,10 @@ def main():
 
         process.send_signal(signal.SIGTERM)
         output, _ = process.communicate(timeout=5)
+        return_code = process.returncode
         process = None
+        if return_code != 0:
+            raise RuntimeError(f"tun2socks graceful shutdown returned {return_code}:\\n{output}")
 
         os.fstat(tun_fd)
         print("PASS: inherited TUN FD startup, nonblocking mode, and caller ownership")

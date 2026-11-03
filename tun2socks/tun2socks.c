@@ -184,6 +184,7 @@ BReactor ss;
 
 // set to 1 by terminate
 int quitting;
+int exit_status = 1;
 
 // TUN device
 BTap device;
@@ -510,7 +511,7 @@ fail1:
 fail0:
     DebugObjectGlobal_Finish();
     
-    return 1;
+    return exit_status;
 }
 
 void terminate (void)
@@ -955,7 +956,8 @@ int process_arguments (void)
 void signal_handler (void *unused)
 {
     ASSERT(!quitting)
-    
+    exit_status = 0;
+
     BLog(BLOG_NOTICE, "termination requested");
     
     terminate();
