@@ -41,7 +41,7 @@ go run ./tests/udpgw-data-plane/main.go \
   --report ./udpgw-data-plane.json
 ~~~
 
-This benchmark creates real UDPGW mappings against eight local UDP echo endpoints, verifies the echoed payload for every mapping, then sends a second datagram through every mapping to confirm persistence. It uses up to two TCP client sessions because each client's mapping ID is 16-bit. The test binds UDP sockets round-robin across four local IPv4 addresses using kernel-assigned ephemeral ports; each address therefore has its own ephemeral-port capacity. The benchmark MTU is explicitly set to 1500; this does not change the production default MTU.
+This benchmark creates real UDPGW mappings against eight local UDP echo endpoints, verifies the echoed payload for every mapping, then sends a second datagram through every mapping to confirm persistence. It uses up to two TCP client sessions because each client's mapping ID is 16-bit. The test binds UDP sockets round-robin across four configured local IPv4 addresses using kernel-assigned ephemeral ports; each address therefore has its own ephemeral-port capacity. The benchmark MTU is explicitly set to 1500; this does not change the production default MTU.
 
 
 The optional `--local-udp-bind-addr <IPv4:0>` option can be repeated up to 16 times. It binds each IPv4 UDP mapping to one configured local address with port 0, letting the kernel allocate a unique ephemeral port per address. It cannot be combined with the fixed IPv4/IPv6 local UDP port-range options; IPv6 mappings continue to use their existing binding path.
