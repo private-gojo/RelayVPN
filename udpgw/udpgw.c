@@ -73,6 +73,7 @@
 #define LOGGER_SYSLOG 2
 
 #define DNS_UPDATE_TIME 2000
+#define MAX_LOCAL_UDP_BIND_ADDRS 16
 
 struct client {
     BConnection con;
@@ -141,6 +142,8 @@ struct {
     int local_udp_ip6_num_ports;
     char *local_udp_ip6_addr;
     int unique_local_ports;
+    char *local_udp_bind_addrs[MAX_LOCAL_UDP_BIND_ADDRS];
+    int num_local_udp_bind_addrs;
 } options;
 
 // MTUs
@@ -156,6 +159,11 @@ BAddr local_udp_addr;
 
 // local UDP/IPv6 port range, if options.local_udp_ip6_num_ports>=0
 BAddr local_udp_ip6_addr;
+
+// Optional local IPv4 addresses for kernel-assigned UDP source ports
+BAddr local_udp_bind_addrs[MAX_LOCAL_UDP_BIND_ADDRS];
+int num_local_udp_bind_addrs;
+int next_local_udp_bind_addr;
 
 // DNS forwarding
 BAddr dns_addr;
@@ -368,6 +376,7 @@ void print_help (const char *name)
         "        [--client-socket-sndbuf <bytes / 0>]\n"
         "        [--local-udp-addrs <addr> <num_ports>]\n"
         "        [--local-udp-ip6-addrs <addr> <num_ports>]\n"
+        "        [--local-udp-bind-addr <IPv4:0>] ...\n"
         "        [--unique-local-ports]\n"
         "Address format is a.b.c.d:port (IPv4) or [addr]:port (IPv6).\n",
         name
@@ -417,6 +426,7 @@ int parse_arguments (int argc, char *argv[])
     options.local_udp_num_ports = -1;
     options.local_udp_ip6_num_ports = -1;
     options.unique_local_ports = 0;
+    options.num_local_udp_bind_addrs = 0;
     
     int i;
     for (i = 1; i < argc; i++) {
@@ -575,6 +585,18 @@ int parse_arguments (int argc, char *argv[])
             }
             i += 2;
         }
+        else if (!strcmp(arg, "--local-udp-bind-addr")) {
+            if (1 >= argc - i) {
+                fprintf(stderr, "%s: requires an argument\n", arg);
+                return 0;
+            }
+            if (options.num_local_udp_bind_addrs == MAX_LOCAL_UDP_BIND_ADDRS) {
+                fprintf(stderr, "%s: too many\n", arg);
+                return 0;
+            }
+            options.local_udp_bind_addrs[options.num_local_udp_bind_addrs++] = argv[i + 1];
+            i++;
+        }
         else if (!strcmp(arg, "--unique-local-ports")) {
             options.unique_local_ports = 1;
         }
@@ -625,6 +647,27 @@ int process_arguments (void)
             BLog(BLOG_ERROR, "local udp ip6 addr: must be an IPv6 address");
             return 0;
         }
+    }
+    
+    if (options.num_local_udp_bind_addrs > 0) {
+        if (options.local_udp_num_ports >= 0 || options.local_udp_ip6_num_ports >= 0) {
+            BLog(BLOG_ERROR, "local UDP bind IPs cannot be combined with fixed local UDP port ranges");
+            return 0;
+        }
+        num_local_udp_bind_addrs = 0;
+        while (num_local_udp_bind_addrs < options.num_local_udp_bind_addrs) {
+            BAddr *bind_addr = &local_udp_bind_addrs[num_local_udp_bind_addrs];
+            if (!BAddr_Parse(bind_addr, options.local_udp_bind_addrs[num_local_udp_bind_addrs], NULL, 0)) {
+                BLog(BLOG_ERROR, "local UDP bind address: BAddr_Parse failed");
+                return 0;
+            }
+            if (bind_addr->type != BADDR_TYPE_IPV4 || ntoh16(BAddr_GetPort(bind_addr)) != 0) {
+                BLog(BLOG_ERROR, "local UDP bind address must be IPv4 with port 0");
+                return 0;
+            }
+            num_local_udp_bind_addrs++;
+        }
+        next_local_udp_bind_addr = 0;
     }
     
     return 1;
@@ -1051,6 +1094,24 @@ void connection_init (struct client *client, uint16_t conid, BAddr addr, BAddr o
     }
     
     con->local_port_index = -1;
+    
+    // Bind to a configured local IPv4 address with an ephemeral source port.
+    if (addr.type == BADDR_TYPE_IPV4 && num_local_udp_bind_addrs > 0) {
+        int bound = 0;
+        for (int i = 0; i < num_local_udp_bind_addrs; i++) {
+            int index = (next_local_udp_bind_addr + i) % num_local_udp_bind_addrs;
+            if (BDatagram_Bind(&con->udp_dgram, local_udp_bind_addrs[index])) {
+                next_local_udp_bind_addr = (index + 1) % num_local_udp_bind_addrs;
+                bound = 1;
+                break;
+            }
+        }
+        if (!bound) {
+            client_log(client, BLOG_ERROR, "failed to bind to configured local UDP addresses");
+            BDatagram_Free(&con->udp_dgram);
+            goto fail2;
+        }
+    }
     
     int local_num_ports = get_local_num_ports(addr.type);
     
