@@ -46,6 +46,23 @@ async def read_socks_address(reader, atyp):
     await reader.readexactly(2)
 
 
+async def echo_udp_over_tcp(reader, writer):
+    global tcp_udp_records
+
+    while True:
+        header = await reader.readexactly(3)
+        data_len = struct.unpack("!H", header[:2])[0]
+        header_len = header[2]
+        address_len = header_len - 3
+        if address_len < 4 or address_len > 262 or data_len > 65535:
+            raise ValueError("invalid UDP-over-TCP frame")
+        address = await reader.readexactly(address_len)
+        payload = await reader.readexactly(data_len)
+        tcp_udp_records += 1
+        writer.write(header + address + payload)
+        await writer.drain()
+
+
 async def handle_socks(reader, writer):
     global tcp_accepted, tcp_closed
 
@@ -60,7 +77,7 @@ async def handle_socks(reader, writer):
         await writer.drain()
 
         version, command, reserved, atyp = await reader.readexactly(4)
-        if version != 5 or reserved != 0 or command not in (1, 3):
+        if version != 5 or reserved != 0 or command not in (1, 3, 5):
             writer.write(b"\x05\x07\x00\x01\x00\x00\x00\x00\x00\x00")
             await writer.drain()
             return
@@ -79,6 +96,12 @@ async def handle_socks(reader, writer):
                     await writer.drain()
             finally:
                 tcp_closed += 1
+            return
+
+        if command == 5:
+            writer.write(b"\x05\x00\x00\x01\x00\x00\x00\x00\x00\x00")
+            await writer.drain()
+            await echo_udp_over_tcp(reader, writer)
             return
 
         reply = b"\x05\x00\x00\x01" + socket.inet_aton(HOST) + struct.pack("!H", RELAY_PORT)
@@ -108,7 +131,7 @@ async def udp_relay():
 
 
 async def handle_control(reader, writer):
-    global released, tcp_accepted, tcp_closed
+    global released, tcp_accepted, tcp_closed, tcp_udp_records
 
     try:
         line = await reader.readline()
@@ -120,13 +143,14 @@ async def handle_control(reader, writer):
             released = False
             tcp_accepted = 0
             tcp_closed = 0
+            tcp_udp_records = 0
             writer.write(b"OK RESET\n")
         elif parts[0] == "WAIT" and len(parts) == 4:
             target = max(0, int(parts[1]))
             timeout_ms = max(0, int(parts[2]))
             settle_ms = max(0, int(parts[3]))
             deadline = time.monotonic() + timeout_ms / 1000
-            while sum(len(packets) for packets in records.values()) < target and time.monotonic() < deadline:
+            while (sum(len(packets) for packets in records.values()) + tcp_udp_records) < target and time.monotonic() < deadline:
                 await asyncio.sleep(0.01)
             await asyncio.sleep(settle_ms / 1000)
             released = True
@@ -143,7 +167,7 @@ async def handle_control(reader, writer):
                     except OSError:
                         pass
                 await asyncio.sleep(0.025)
-            writer.write(f"RECORDED {len(snapshot)}\n".encode("ascii"))
+            writer.write(f"RECORDED {len(snapshot) + tcp_udp_records}\n".encode("ascii"))
         elif parts[0] in ("WAITTCP", "WAITCLOSED") and len(parts) == 3:
             target = max(0, int(parts[1]))
             timeout_ms = max(0, int(parts[2]))
