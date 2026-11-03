@@ -101,6 +101,31 @@ static uint16_t udp_checksum (const struct udp_header *header, const uint8_t *pa
     return hton16(t);
 }
 
+static int udp_ipv4_checksum_valid (
+    const struct udp_header *header,
+    const uint8_t *payload,
+    uint16_t payload_len,
+    uint32_t source_addr,
+    uint32_t dest_addr
+)
+{
+    if (header->checksum == 0) {
+        return 1;
+    }
+
+    struct udp_header checksum_header = *header;
+    uint16_t checksum_in_packet = checksum_header.checksum;
+    checksum_header.checksum = 0;
+
+    return checksum_in_packet == udp_checksum(
+        &checksum_header,
+        payload,
+        payload_len,
+        source_addr,
+        dest_addr
+    );
+}
+
 static uint16_t udp_ip6_checksum (const struct udp_header *header, const uint8_t *payload, uint16_t payload_len, const uint8_t *source_addr, const uint8_t *dest_addr)
 {
     uint32_t t = 0;

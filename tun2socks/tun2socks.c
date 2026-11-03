@@ -391,7 +391,7 @@ int main (int argc, char **argv)
         }
         
         // init udpgw client
-        if (!SocksUdpGwClient_Init(&udpgw_client, udp_mtu, DEFAULT_UDPGW_MAX_CONNECTIONS,
+        if (!SocksUdpGwClient_Init(&udpgw_client, udp_mtu, options.udpgw_max_connections,
             options.udpgw_connection_buffer_size, UDPGW_KEEPALIVE_TIME, socks_server_addr,
             socks_auth_info, socks_num_auth_info, udpgw_remote_server_addr,
             UDPGW_RECONNECT_TIME, &ss, NULL, udp_send_packet_to_device))
@@ -1118,11 +1118,14 @@ int process_device_udp_packet (uint8_t *data, int data_len)
                 goto fail;
             }
             
-            // verify UDP checksum
-            uint16_t checksum_in_packet = udp_header.checksum;
-            udp_header.checksum = 0;
-            uint16_t checksum_computed = udp_checksum(&udp_header, data, data_len, ipv4_header.source_address, ipv4_header.destination_address);
-            if (checksum_in_packet != checksum_computed) {
+            // Verify nonzero IPv4 UDP checksums; zero means checksum disabled.
+            if (!udp_ipv4_checksum_valid(
+                &udp_header,
+                data,
+                (uint16_t)data_len,
+                ipv4_header.source_address,
+                ipv4_header.destination_address
+            )) {
                 goto fail;
             }
             
