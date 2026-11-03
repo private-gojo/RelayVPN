@@ -94,6 +94,7 @@ jobs:
             --max-clients 1000 \
             --steps 1000 \
             --hold 1s \
+            --keepalive-interval 100ms \
             --report "$RUNNER_TEMP/udpgw-capacity-smoke.json"
           bash tests/udpgw-cli-validation.sh \
             "$RUNNER_TEMP/relayvpn-ci-build/tun2socks/badvpn-tun2socks" \
