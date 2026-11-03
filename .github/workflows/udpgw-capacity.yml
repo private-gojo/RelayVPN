@@ -35,7 +35,7 @@ permissions:
 
 concurrency:
   group: udpgw-capacity-${{ github.ref }}
-  cancel-in-progress: false
+  cancel-in-progress: true
 
 jobs:
   capacity:
