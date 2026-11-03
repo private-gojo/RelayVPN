@@ -13,6 +13,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -21,13 +22,14 @@ import (
 	"time"
 )
 
-const payloadLen = 12
+const payloadPrefixLen = 20
 const responseTimeout = 2 * time.Minute
 
 type options struct {
 	binary string
 	mappings int
 	udpMTU int
+	payloadSize int
 	report string
 	oneClientPerMapping bool
 }
@@ -45,6 +47,12 @@ type stage struct {
 	Responses int64 `json:"responses"`
 	Server metrics `json:"server"`
 	Generator metrics `json:"generator"`
+	P50LatencyUS uint64 `json:"p50_latency_us"`
+	P95LatencyUS uint64 `json:"p95_latency_us"`
+	P99LatencyUS uint64 `json:"p99_latency_us"`
+	MaxLatencyUS uint64 `json:"max_latency_us"`
+	CompletionPPS float64 `json:"completion_pps"`
+	EchoResponseMbps float64 `json:"echo_response_mbps"`
 }
 
 type report struct {
@@ -52,12 +60,17 @@ type report struct {
 	LastStable int `json:"last_stable_mappings"`
 	Clients int `json:"tcp_clients"`
 	UDPMTU int `json:"udp_mtu"`
+	PayloadSize int `json:"payload_size_bytes"`
 	EchoServers int `json:"echo_servers"`
 	SourceBindIPs int `json:"source_bind_ips"`
 	EchoPackets uint64 `json:"echo_packets"`
 	EchoErrors uint64 `json:"echo_errors"`
 	PersistenceResponses int64 `json:"persistence_responses"`
 	PersistenceRoundTripMS int64 `json:"persistence_round_trip_ms"`
+	PersistenceP50LatencyUS uint64 `json:"persistence_p50_latency_us"`
+	PersistenceP95LatencyUS uint64 `json:"persistence_p95_latency_us"`
+	PersistenceP99LatencyUS uint64 `json:"persistence_p99_latency_us"`
+	PersistenceMaxLatencyUS uint64 `json:"persistence_max_latency_us"`
 	ServerPID int `json:"server_pid"`
 	OneClientPerMapping bool `json:"one_client_per_mapping"`
 	FailedAt int `json:"failed_at_mappings,omitempty"`
@@ -84,6 +97,8 @@ type session struct {
 	reader *bufio.Reader
 	maps []mapping
 	seen [2][]bool
+	latency [2][]uint64
+	payloadSize int
 	writeMu sync.Mutex
 	err chan error
 }
@@ -97,6 +112,7 @@ func parseOptions() options {
 	flag.StringVar(&o.binary, "binary", "", "Path to badvpn-udpgw")
 	flag.IntVar(&o.mappings, "mappings", 1000, "Maximum active UDP mappings")
 	flag.IntVar(&o.udpMTU, "udp-mtu", 1500, "UDP MTU for this benchmark")
+	flag.IntVar(&o.payloadSize, "payload-size", 1200, "UDP payload bytes per echo packet")
 	flag.StringVar(&o.report, "report", "", "Optional JSON report path")
 	flag.BoolVar(&o.oneClientPerMapping, "one-client-per-mapping", false, "Use one TCP client session per active UDP mapping")
 	flag.Parse()
@@ -126,7 +142,7 @@ func startEchoPool() (*echoPool, error) {
 		p.conns = append(p.conns, conn)
 		p.addrs = append(p.addrs, conn.LocalAddr().(*net.UDPAddr))
 		go func(c *net.UDPConn) {
-			buf := make([]byte, 2048)
+			buf := make([]byte, 65535)
 			for {
 				n, peer, readErr := c.ReadFromUDP(buf)
 				if readErr != nil {
@@ -146,12 +162,35 @@ func (p *echoPool) close() {
 
 func (p *echoPool) target(i int) *net.UDPAddr { return p.addrs[i%len(p.addrs)] }
 
-func payload(global, round uint32) [payloadLen]byte {
-	var b [payloadLen]byte
+func payload(size int, global, round uint32) []byte {
+	b := make([]byte, size)
 	copy(b[:4], "RVDP")
 	binary.LittleEndian.PutUint32(b[4:8], global)
 	binary.LittleEndian.PutUint32(b[8:12], round)
+	binary.LittleEndian.PutUint64(b[12:20], uint64(time.Now().UnixNano()))
+	for i := payloadPrefixLen; i < len(b); i++ {
+		b[i] = byte((uint64(global)*31 + uint64(i)*17 + uint64(round)*13) & 0xff)
+	}
 	return b
+}
+
+func validatePayload(got []byte, global, round uint32) (uint64, error) {
+	if len(got) < payloadPrefixLen || string(got[:4]) != "RVDP" ||
+		binary.LittleEndian.Uint32(got[4:8]) != global ||
+		binary.LittleEndian.Uint32(got[8:12]) != round {
+		return 0, errors.New("payload identity mismatch")
+	}
+	sentAt := binary.LittleEndian.Uint64(got[12:20])
+	if sentAt == 0 {
+		return 0, errors.New("missing payload timestamp")
+	}
+	for i := payloadPrefixLen; i < len(got); i++ {
+		want := byte((uint64(global)*31 + uint64(i)*17 + uint64(round)*13) & 0xff)
+		if got[i] != want {
+			return 0, fmt.Errorf("payload corruption at byte %d", i)
+		}
+	}
+	return sentAt, nil
 }
 
 func makeMapping(addr *net.UDPAddr, global uint32) mapping {
@@ -166,15 +205,15 @@ func keepaliveFrame() []byte {
 	return []byte{3, 0, 1, 0, 0}
 }
 
-func packet(m mapping, conid uint16, round uint32) []byte {
-	bodyLen := 3 + 6 + payloadLen
+func packet(m mapping, conid uint16, round uint32, payloadSize int) []byte {
+	bodyLen := 3 + 6 + payloadSize
 	out := make([]byte, 2+bodyLen)
 	binary.LittleEndian.PutUint16(out[:2], uint16(bodyLen))
 	out[2] = 0
 	binary.LittleEndian.PutUint16(out[3:5], conid)
 	copy(out[5:11], m.addr[:])
-	p := payload(m.global, round)
-	copy(out[11:], p[:])
+	p := payload(payloadSize, m.global, round)
+	copy(out[11:], p)
 	return out
 }
 
@@ -218,7 +257,7 @@ func (s *session) readLoop(c *counters) {
 			return
 		}
 		n := int(binary.LittleEndian.Uint16(lb[:]))
-		if n < 3+6+payloadLen || n > 65535 {
+		if n < 3+6+s.payloadSize || n > 65535 {
 			select { case s.err <- fmt.Errorf("invalid response frame length %d", n): default: }
 			return
 		}
@@ -228,27 +267,29 @@ func (s *session) readLoop(c *counters) {
 			return
 		}
 		id := int(binary.LittleEndian.Uint16(b[1:3]))
-		if id >= len(s.maps) || string(b[3:9]) != string(s.maps[id].addr[:]) || len(b[9:]) != payloadLen {
+		if id >= len(s.maps) || string(b[3:9]) != string(s.maps[id].addr[:]) || len(b[9:]) != s.payloadSize {
 			select { case s.err <- fmt.Errorf("invalid response mapping id=%d", id): default: }
 			return
 		}
 		got := b[9:]
-		if string(got[:4]) != "RVDP" || binary.LittleEndian.Uint32(got[4:8]) != s.maps[id].global {
-			select { case s.err <- fmt.Errorf("response payload mismatch for mapping %d", id): default: }
+		round := binary.LittleEndian.Uint32(got[8:12])
+		if round < 1 || round > 2 || s.seen[round-1][id] {
+			select { case s.err <- fmt.Errorf("duplicate or invalid response round=%d id=%d", round, id): default: }
 			return
 		}
-		r := binary.LittleEndian.Uint32(got[8:12])
-		if r < 1 || r > 2 || s.seen[r-1][id] {
-			select { case s.err <- fmt.Errorf("duplicate or invalid response round=%d id=%d", r, id): default: }
+		sentAt, err := validatePayload(got, s.maps[id].global, round)
+		if err != nil {
+			select { case s.err <- fmt.Errorf("response payload mapping=%d: %w", id, err): default: }
 			return
 		}
-		want := payload(s.maps[id].global, r)
-		if string(got) != string(want[:]) {
-			select { case s.err <- fmt.Errorf("echo payload mismatch round=%d id=%d", r, id): default: }
+		latency := time.Since(time.Unix(0, int64(sentAt)))
+		if latency < 0 {
+			select { case s.err <- fmt.Errorf("negative response latency mapping=%d", id): default: }
 			return
 		}
-		s.seen[r-1][id] = true
-		c.round[r-1].Add(1)
+		s.latency[round-1][id] = uint64(latency.Microseconds())
+		s.seen[round-1][id] = true
+		c.round[round-1].Add(1)
 	}
 }
 
@@ -380,6 +421,37 @@ func waitCount(c *counters, round int, want int64, errs <-chan error) error {
 	return nil
 }
 
+func latencyStats(sessions []*session, round, count int) (uint64, uint64, uint64, uint64) {
+	samples := make([]uint64, 0, count)
+	remaining := count
+	for _, current := range sessions {
+		if remaining == 0 { break }
+		n := len(current.latency[round-1])
+		if n > remaining { n = remaining }
+		for _, sample := range current.latency[round-1][:n] {
+			if sample > 0 { samples = append(samples, sample) }
+		}
+		remaining -= n
+	}
+	if len(samples) == 0 { return 0, 0, 0, 0 }
+	sort.Slice(samples, func(i, j int) bool { return samples[i] < samples[j] })
+	at := func(percent float64) uint64 {
+		index := int(float64(len(samples))*percent + 0.999999) - 1
+		if index < 0 { index = 0 }
+		if index >= len(samples) { index = len(samples)-1 }
+		return samples[index]
+	}
+	return at(0.50), at(0.95), at(0.99), samples[len(samples)-1]
+}
+
+func throughput(responses, payloadSize int, elapsed time.Duration) (float64, float64) {
+	seconds := elapsed.Seconds()
+	if seconds <= 0 { return 0, 0 }
+	pps := float64(responses) / seconds
+	mbps := float64(responses) * float64(payloadSize) * 8 / seconds / 1_000_000
+	return pps, mbps
+}
+
 func recordFailure(r *report, stageCount, round int, started time.Time, c *counters, pid int, echo *echoPool, cause error) error {
 	r.FailedAt = stageCount
 	r.FailureRound = round
@@ -408,6 +480,7 @@ func run(o options) error {
 	if o.binary == "" { return errors.New("--binary is required") }
 	if o.mappings < 1 || o.mappings > 100000 { return errors.New("--mappings must be 1..100000") }
 	if o.udpMTU < 256 || o.udpMTU > 65514 { return errors.New("--udp-mtu must be 256..65514") }
+	if o.payloadSize < payloadPrefixLen || o.payloadSize > 65507 || o.payloadSize > o.udpMTU { return errors.New("--payload-size must be >=20, <=65507, and <= --udp-mtu") }
 	clients := (o.mappings + 65535) / 65536
 	maxConnections := 65536
 	requiredFDs := o.mappings + clients + 512
@@ -438,6 +511,8 @@ func run(o options) error {
 		sessions[i] = &session{
 			maps: make([]mapping, count),
 			seen: [2][]bool{make([]bool, count), make([]bool, count)},
+			latency: [2][]uint64{make([]uint64, count), make([]uint64, count)},
+			payloadSize: o.payloadSize,
 			err: errs,
 		}
 	}
@@ -458,7 +533,7 @@ func run(o options) error {
 	for _, current := range sessions { go current.readLoop(c) }
 	keepaliveSessions(ctx, sessions)
 
-	r := report{Requested: o.mappings, Clients: clients, UDPMTU: o.udpMTU,
+	r := report{Requested: o.mappings, Clients: clients, UDPMTU: o.udpMTU, PayloadSize: o.payloadSize,
 		EchoServers: len(echo.conns), SourceBindIPs: 4, OneClientPerMapping: o.oneClientPerMapping, ServerPID: pid,
 		Stages: make([]stage, 0, len(stages(o.mappings))+1)}
 	defer func() {
@@ -475,15 +550,21 @@ func run(o options) error {
 			hi := targetCount - offset
 			if hi > len(s.maps) { hi = len(s.maps) }
 			if hi > lo {
-				batch := make([]byte, 0, (hi-lo)*23)
-				for i := lo; i < hi; i++ { batch = append(batch, packet(s.maps[i], uint16(i), 1)...)}
+				frameSize := 2 + 3 + 6 + o.payloadSize
+				batch := make([]byte, 0, (hi-lo)*frameSize)
+				for i := lo; i < hi; i++ { batch = append(batch, packet(s.maps[i], uint16(i), 1, o.payloadSize)...)}
 				if err := writeFrames(s, batch); err != nil { return recordFailure(&r, targetCount, 1, started, c, pid, echo, fmt.Errorf("send stage %d: %w", targetCount, err)) }
 			}
 			offset += len(s.maps)
 		}
 		if err := waitCount(c, 1, int64(targetCount), errs); err != nil { return recordFailure(&r, targetCount, 1, started, c, pid, echo, err) }
-		entry := stage{Mappings: targetCount, RoundTripMS: time.Since(started).Milliseconds(),
-			Responses: c.round[0].Load(), Server: procMetrics(pid), Generator: procMetrics(os.Getpid())}
+		elapsed := time.Since(started)
+		p50, p95, p99, maxLatency := latencyStats(sessions, 1, targetCount)
+		pps, mbps := throughput(targetCount, o.payloadSize, elapsed)
+		entry := stage{Mappings: targetCount, RoundTripMS: elapsed.Milliseconds(),
+			Responses: c.round[0].Load(), Server: procMetrics(pid), Generator: procMetrics(os.Getpid()),
+			P50LatencyUS: p50, P95LatencyUS: p95, P99LatencyUS: p99, MaxLatencyUS: maxLatency,
+			CompletionPPS: pps, EchoResponseMbps: mbps}
 		r.Stages = append(r.Stages, entry)
 		r.LastStable = targetCount
 		fmt.Printf("mappings=%d round_trip_ms=%d replies=%d server_rss_kib=%d server_fd=%d\n",
@@ -493,13 +574,16 @@ func run(o options) error {
 
 	persistStart := time.Now()
 	for _, s := range sessions {
-		batch := make([]byte, 0, len(s.maps)*23)
-		for i, m := range s.maps { batch = append(batch, packet(m, uint16(i), 2)...)}
+		frameSize := 2 + 3 + 6 + o.payloadSize
+		batch := make([]byte, 0, len(s.maps)*frameSize)
+		for i, m := range s.maps { batch = append(batch, packet(m, uint16(i), 2, o.payloadSize)...)}
 		if err := writeFrames(s, batch); err != nil { return recordFailure(&r, o.mappings, 2, persistStart, c, pid, echo, fmt.Errorf("send persistence round: %w", err)) }
 	}
 	if err := waitCount(c, 2, int64(o.mappings), errs); err != nil { return recordFailure(&r, o.mappings, 2, persistStart, c, pid, echo, err) }
 	r.PersistenceResponses = c.round[1].Load()
-	r.PersistenceRoundTripMS = time.Since(persistStart).Milliseconds()
+	persistElapsed := time.Since(persistStart)
+	r.PersistenceRoundTripMS = persistElapsed.Milliseconds()
+	r.PersistenceP50LatencyUS, r.PersistenceP95LatencyUS, r.PersistenceP99LatencyUS, r.PersistenceMaxLatencyUS = latencyStats(sessions, 2, o.mappings)
 	r.EchoPackets, r.EchoErrors = echo.packets.Load(), echo.errors.Load()
 	if r.EchoPackets < uint64(o.mappings*2) || r.EchoErrors != 0 {
 		return recordFailure(&r, o.mappings, 2, persistStart, c, pid, echo, fmt.Errorf("UDP echo validation failed: packets=%d expected>=%d errors=%d", r.EchoPackets, o.mappings*2, r.EchoErrors))
