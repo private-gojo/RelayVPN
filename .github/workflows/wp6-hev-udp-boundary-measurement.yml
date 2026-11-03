@@ -159,13 +159,15 @@ jobs:
             if sudo bash -c 'ulimit -n 65535; exec ip netns exec cli python3 "$@"' \
               _ "$CLIENT" --flows "$flows" --expected "$expected" \
               --wait-target "$expected" --timeout-ms 45000 \
-              --settle-ms 2000 --response-seconds 6; then
+              --settle-ms 2000 --response-seconds 6 \
+              --send-batch-size 64 --send-batch-delay-ms 50; then
               echo "$label client_status=0"
             else
               local client_status=$?
               echo "$label client_status=$client_status"
               FAILURES+=("$label client status $client_status")
             fi
+            sudo ip -n cli -s link show tun0 || true
 
             tail -n 100 "$ROOT/logs/$label-hev.log" || true
             if sudo kill -0 "$HEV_PID" 2>/dev/null; then
