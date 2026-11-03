@@ -53,6 +53,17 @@ jobs:
           cmake --build "$RUNNER_TEMP/relayvpn-wp6-hev-build" --target hev-bin --parallel 2
           test -x third_party/hev-socks5-tunnel/bin/hev-socks5-tunnel
 
+      - name: Record Hev lwIP allocator configuration
+        shell: bash
+        run: |
+          set -euo pipefail
+          HEV_LWIP="third_party/hev-socks5-tunnel/third-part/lwip/src"
+          echo "CFLAGS environment: ${CFLAGS:-<unset>}"
+          printf '#include <lwip/opt.h>\n' | gcc ${CFLAGS:-} \\
+            -I"$HEV_LWIP/include" -I"$HEV_LWIP/ports/include" \\
+            -dM -E -x c - | grep -E '^#define (MEMP_MEM_MALLOC|MEMP_NUM_UDP_PCB|LWIP_UDP) '
+          grep -n "lwipopts.h" third_party/hev-socks5-tunnel/third-part/lwip/build/core/udp.dep || true
+
       - name: Run session-count and UDP PCB boundary measurements
         shell: bash
         run: |
@@ -204,13 +215,13 @@ jobs:
           run_case session-limit-1 1 1 0
           run_case session-limit-2 2 2 1
           run_case session-limit-130 130 130 129
-          run_case udp-pcb-pool 0 1025 1023
+          run_case udp-high-flow-1025 0 1025 1025
 
           {
             echo ""
             echo "### Interpretation"
             echo "- Session cap cases record the current source behavior: configured N yields N-1 surviving sessions."
-            echo "- The PCB case checks the 1,024-entry lwIP UDP PCB pool with one listener reserved."
+            echo "- The 1,025-flow case is a high-flow smoke measurement, not an assumed PCB cap."
             echo "- Queue 512/513 measurement is deferred: the current drop path has no exposed counter/high-water mark, so a packet flood alone cannot prove the internal queue boundary without adding test instrumentation."
           } >> "$GITHUB_STEP_SUMMARY"
 
