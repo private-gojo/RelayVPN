@@ -34,6 +34,8 @@ def main():
     parser.add_argument("--settle-ms", type=int, default=2000)
     parser.add_argument("--response-seconds", type=float, default=6.0)
     parser.add_argument("--packets-per-flow", type=int, default=1)
+    parser.add_argument("--payload-size", type=int, default=12)
+    parser.add_argument("--expected-proxy-records", type=int)
     parser.add_argument("--send-batch-size", type=int, default=64)
     parser.add_argument("--send-batch-delay-ms", type=float, default=25.0)
     args = parser.parse_args()
@@ -44,6 +46,8 @@ def main():
         raise SystemExit("invalid send pacing settings")
     if args.packets_per_flow < 1 or args.expected > args.flows * args.packets_per_flow:
         raise SystemExit("invalid packet count")
+    if args.payload_size < 12 or args.expected_proxy_records is not None and args.expected_proxy_records < 0:
+        raise SystemExit("invalid payload or proxy record count")
 
     reset = control_command("RESET")
     if reset != "OK RESET":
@@ -54,6 +58,10 @@ def main():
     send_errors = []
     responses = set()
     total_packets = args.flows * args.packets_per_flow
+    expected_proxy_records = (
+        args.expected if args.expected_proxy_records is None
+        else args.expected_proxy_records
+    )
 
     try:
         for index in range(args.flows):
@@ -71,6 +79,7 @@ def main():
                     PAYLOAD_PREFIX
                     + index.to_bytes(4, "big")
                     + sequence.to_bytes(4, "big")
+                    + (b"X" * (args.payload_size - 12))
                 )
                 try:
                     sock.sendto(payload, (DEST_HOST, DEST_PORT_BASE + index))
@@ -119,13 +128,14 @@ def main():
         print(
             "BOUNDARY_RESULT "
             f"flows={args.flows} packets_per_flow={args.packets_per_flow} "
-            f"sent={sent} proxy_records={recorded} "
+            f"sent={sent} payload_size={args.payload_size} "
+            f"proxy_records={recorded} expected_proxy_records={expected_proxy_records} "
             f"responses={len(responses)} expected={args.expected} "
             f"send_errors={len(send_errors)} missing={missing[:20]}"
         )
-        if recorded != args.expected:
+        if recorded != expected_proxy_records:
             raise SystemExit(
-                f"proxy record mismatch: expected {args.expected}, got {recorded}"
+                f"proxy record mismatch: expected {expected_proxy_records}, got {recorded}"
             )
         if send_errors:
             print(f"SEND_ERRORS {send_errors[:10]}")
