@@ -110,7 +110,7 @@ static int ipv6_udp_payload (
     uint8_t next_header = header->next_header;
     int offset = 0;
 
-    for (int extension_count = 0; extension_count < 16; extension_count++) {
+    for (int extension_count = 0; ; extension_count++) {
         int remaining = payload_len - offset;
         uint8_t following_header;
         int extension_len;
@@ -119,6 +119,9 @@ static int ipv6_udp_payload (
             *out_payload = payload + offset;
             *out_payload_len = remaining;
             return 1;
+        }
+        if (extension_count >= 16) {
+            return 0;
         }
 
         switch (next_header) {
@@ -167,8 +170,6 @@ static int ipv6_udp_payload (
         offset += extension_len;
         next_header = following_header;
     }
-
-    return 0;
 }
 
 #endif

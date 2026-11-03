@@ -96,11 +96,22 @@ int main(void)
     }
 
     header.next_header = IPV6_NEXT_HOP_BY_HOP;
+    memset(payload, 0, sizeof(payload));
+    for (int i = 0; i < 16; i++) {
+        payload[i * 8] = (i == 15) ? IPV6_NEXT_UDP : IPV6_NEXT_HOP_BY_HOP;
+        payload[i * 8 + 1] = 0;
+    }
+    if (!expect_udp(&header, payload, 17 * 8, 16 * 8)) {
+        fprintf(stderr, "Maximum supported IPv6 extension chain was rejected\n");
+        return 1;
+    }
+
+    memset(payload, 0, sizeof(payload));
     for (int i = 0; i < 17; i++) {
         payload[i * 8] = (i == 16) ? IPV6_NEXT_UDP : IPV6_NEXT_HOP_BY_HOP;
         payload[i * 8 + 1] = 0;
     }
-    if (ipv6_udp_payload(&header, payload, 17 * 8, &udp_data, &udp_data_len)) {
+    if (ipv6_udp_payload(&header, payload, 18 * 8, &udp_data, &udp_data_len)) {
         fprintf(stderr, "Excessive IPv6 extension chain was accepted\n");
         return 1;
     }
