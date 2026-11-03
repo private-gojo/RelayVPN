@@ -2,7 +2,7 @@
 import argparse
 import errno
 import os
-import poll
+import select
 import resource
 import signal
 import socket
@@ -23,29 +23,6 @@ def process_metrics(pid):
     except (FileNotFoundError, PermissionError, ProcessLookupError):
         pass
     return metrics
-
-
-def closed_sockets(sockets):
-    poller = select_poll()
-    for sock in sockets:
-        poller.register(sock, select_poll().POLLIN | select_poll().POLLHUP | select_poll().POLLERR)
-    closed = set()
-    for fd, events in poller.poll(0):
-        try:
-            probe = socket.socket(fileno=fd)
-            try:
-                if probe.recv(1, socket.MSG_PEEK) == b"":
-                    closed.add(fd)
-            finally:
-                probe.detach()
-        except OSError:
-            closed.add(fd)
-    return closed
-
-
-def select_poll():
-    import select
-    return select
 
 
 def main():
@@ -102,6 +79,7 @@ def main():
         else:
             raise RuntimeError("UDPGW listener did not become ready")
 
+        time.sleep(0.1)
         for index in range(args.clients):
             sock = socket.create_connection(
                 ("127.0.0.1", port), timeout=args.connect_timeout
@@ -115,11 +93,11 @@ def main():
                 )
 
         time.sleep(0.2)
-        poller = select_poll().poll()
+        poller = select.poll()
         for sock in clients:
             poller.register(
                 sock,
-                select_poll().POLLIN | select_poll().POLLHUP | select_poll().POLLERR,
+                select.POLLIN | select.POLLHUP | select.POLLERR,
             )
         unexpected = []
         for fd, events in poller.poll(0):
