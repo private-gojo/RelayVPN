@@ -37,11 +37,17 @@ GO111MODULE=off go test -race ./tests/udpgw-data-plane
 go run ./tests/udpgw-data-plane/main.go \
   --binary ./build/udpgw/badvpn-udpgw \
   --mappings 100000 \
-  --udp-mtu 1500 \\\n  --payload-size 1200 \
+  --udp-mtu 1500 \n  --payload-size 1200 \
   --report ./udpgw-data-plane.json
 ~~~
 
 This benchmark creates real UDPGW mappings against eight local UDP echo endpoints, verifies a configurable-size payload for every mapping, then sends a second datagram through every mapping to confirm persistence. The default payload is 1200 bytes at UDP MTU 1500; the report includes per-stage p50/p95/p99/max latency, completion packets per second, and echoed-payload Mbps. It uses up to two TCP client sessions because each client's mapping ID is 16-bit. The test binds UDP sockets round-robin across four configured local IPv4 addresses using kernel-assigned ephemeral ports; each address therefore has its own ephemeral-port capacity. The optional `--one-client-per-mapping` profile creates one TCP client session for each UDP mapping and is currently capped at 10,000 sessions to stay within the single-runner source-port budget. The benchmark MTU is explicitly set to 1500; this does not change the production default MTU.
+
+For a combined TCP-client plus UDP-mapping profile, run up to 10,000 clients with one active mapping each:
+
+~~~sh
+go run ./tests/udpgw-data-plane/main.go \\\n  --binary ./build/udpgw/badvpn-udpgw \\\n  --mappings 10000 \\\n  --one-client-per-mapping \\\n  --udp-mtu 1500 \\\n  --payload-size 1200
+~~~
 
 
 The optional `--local-udp-bind-addr <IPv4:0>` option can be repeated up to 16 times. It binds each IPv4 UDP mapping to one configured local address with port 0, letting the kernel allocate a unique ephemeral port per address. It cannot be combined with the fixed IPv4/IPv6 local UDP port-range options; IPv6 mappings continue to use their existing binding path.
