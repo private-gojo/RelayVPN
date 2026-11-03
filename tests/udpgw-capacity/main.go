@@ -38,8 +38,11 @@ type processMetrics struct {
 	FDCount int `json:"fd_count,omitempty"`
 	RSSKiB uint64 `json:"rss_kib,omitempty"`
 	HWMKiB uint64 `json:"hwm_kib,omitempty"`
+	VmSizeKiB uint64 `json:"vm_size_kib,omitempty"`
+	VmPeakKiB uint64 `json:"vm_peak_kib,omitempty"`
+	VmDataKiB uint64 `json:"vm_data_kib,omitempty"`
+	Threads int `json:"threads,omitempty"`
 }
-
 type stageResult struct {
 	Clients int `json:"clients"`
 	ConnectMS int64 `json:"connect_ms"`
@@ -182,6 +185,10 @@ func metricsFor(pid int) processMetrics {
 				switch fields[0] {
 				case "VmRSS:": m.RSSKiB, _ = strconv.ParseUint(fields[1], 10, 64)
 				case "VmHWM:": m.HWMKiB, _ = strconv.ParseUint(fields[1], 10, 64)
+				case "VmSize:": m.VmSizeKiB, _ = strconv.ParseUint(fields[1], 10, 64)
+				case "VmPeak:": m.VmPeakKiB, _ = strconv.ParseUint(fields[1], 10, 64)
+				case "VmData:": m.VmDataKiB, _ = strconv.ParseUint(fields[1], 10, 64)
+				case "Threads:": m.Threads, _ = strconv.Atoi(fields[1])
 				}
 			}
 		}
