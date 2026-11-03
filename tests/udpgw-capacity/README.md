@@ -59,6 +59,21 @@ go run ./tests/udpgw-data-plane/main.go \
 
 The optional `--local-udp-bind-addr <IPv4:0>` option can be repeated up to 16 times. It binds each IPv4 UDP mapping to one configured local address with port 0, letting the kernel allocate a unique ephemeral port per address. It cannot be combined with the fixed IPv4/IPv6 local UDP port-range options; IPv6 mappings continue to use their existing binding path.
 
+## Automated MTU memory sweep
+
+~~~sh
+go build -o ./build/udpgw-data-plane ./tests/udpgw-data-plane
+bash tests/udpgw-data-plane/mtu-memory-sweep.sh \
+  ./build/udpgw/badvpn-udpgw \
+  ./build/udpgw-data-plane \
+  1000 \
+  ./udpgw-mtu-sweep
+~~~
+
+The sweep runs 1,000 active mappings at UDP MTUs 576, 1200, 1500, 4096, 8192, 16384, 32768, and 65514. Payload is 512 bytes at MTU 576, 1000 bytes at MTU 1200, and 1200 bytes at the larger MTUs. Each profile starts a fresh UDPGW process and writes an individual JSON report plus a Markdown summary. This isolates process RSS/HWM per MTU; it does not alter the production default.
+
+The [mtu-sweep] capacity-workflow push profile runs this matrix after its normal 100k TCP-session and active-mapping checks.
+
 ## Measurement boundary
 
 The TCP-session harness measures connected client sessions and the `--max-clients` guard. The separate active-mapping harness measures UDP mapping creation, request/response delivery, persistence, RSS, and file descriptors. Neither is a sustained throughput benchmark; throughput and latency distribution require a separate traffic-rate test.
