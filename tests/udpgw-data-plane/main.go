@@ -409,13 +409,21 @@ func run(o options) error {
 	if o.mappings < 1 || o.mappings > 100000 { return errors.New("--mappings must be 1..100000") }
 	if o.udpMTU < 256 || o.udpMTU > 65514 { return errors.New("--udp-mtu must be 256..65514") }
 	clients := (o.mappings + 65535) / 65536
-	if err := raiseNoFile(o.mappings + clients + 512); err != nil { return err }
+	maxConnections := 65536
+	requiredFDs := o.mappings + clients + 512
+	if o.oneClientPerMapping {
+		if o.mappings > 10000 { return errors.New("--one-client-per-mapping is currently limited to 10000 clients") }
+		clients = o.mappings
+		maxConnections = 1
+		requiredFDs = 2*o.mappings + 512
+	}
+	if err := raiseNoFile(requiredFDs); err != nil { return err }
 
 	echo, err := startEchoPool()
 	if err != nil { return err }
 	defer echo.close()
 
-	server, pid, target, done, err := startServer(o.binary, clients, o.udpMTU)
+	server, pid, target, done, err := startServer(o.binary, clients, maxConnections, o.udpMTU)
 	if err != nil { return err }
 	defer func() { _ = server.Process.Signal(syscall.SIGTERM); <-done }()
 
