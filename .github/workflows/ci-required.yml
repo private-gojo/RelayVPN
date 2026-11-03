@@ -26,6 +26,11 @@ jobs:
       - name: Checkout RelayVPN
         uses: actions/checkout@v4
 
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version: '1.27.x'
+
       - name: Install build tools
         run: |
           set -euo pipefail
@@ -63,7 +68,7 @@ jobs:
             exit 1
           fi
           if grep -Eq 'lib(yaml|lwip|hev-task-system)\.so' "$RUNNER_TEMP/hev-ldd.txt"; then
-            echo "Hev unexpectedly depends on a vendored shared library" >&2
+            echo "Hev unexpectedly depends on a vendored shared-library dependency" >&2
             exit 1
           fi
 
@@ -83,7 +88,13 @@ jobs:
           bash tests/tunfd-cli-test.sh "$RUNNER_TEMP/relayvpn-ci-build/tun2socks/badvpn-tun2socks"
           sudo python3 tests/tunfd-runtime-smoke.py "$RUNNER_TEMP/relayvpn-ci-build/tun2socks/badvpn-tun2socks"
           python3 tests/udpgw-shutdown-smoke.py "$RUNNER_TEMP/relayvpn-ci-build/udpgw/badvpn-udpgw"
-          python3 tests/udpgw-client-scale-smoke.py "$RUNNER_TEMP/relayvpn-ci-build/udpgw/badvpn-udpgw" --clients 1000
+          GO111MODULE=off go test -race ./tests/udpgw-capacity
+          go run ./tests/udpgw-capacity/main.go \
+            --binary "$RUNNER_TEMP/relayvpn-ci-build/udpgw/badvpn-udpgw" \
+            --max-clients 1000 \
+            --steps 1000 \
+            --hold 1s \
+            --report "$RUNNER_TEMP/udpgw-capacity-smoke.json"
           bash tests/udpgw-cli-validation.sh \
             "$RUNNER_TEMP/relayvpn-ci-build/tun2socks/badvpn-tun2socks" \
             "$RUNNER_TEMP/relayvpn-ci-build/udpgw/badvpn-udpgw"
