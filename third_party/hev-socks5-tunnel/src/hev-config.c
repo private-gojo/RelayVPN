@@ -8,6 +8,7 @@
  */
 
 #include <errno.h>
+#include <limits.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <hev-sys.h>
@@ -430,8 +431,20 @@ hev_config_parse_misc (yaml_document_t *doc, yaml_node_t *base)
             }
             udp_copy_buffer_nums = count;
         }
-        else if (0 == strcmp (key, "max-session-count"))
-            max_session_count = strtoul (value, NULL, 10);
+        else if (0 == strcmp (key, "max-session-count")) {
+            char *end;
+            long count;
+
+            errno = 0;
+            count = strtol (value, &end, 10);
+            if (errno || end == value || *end || count < 0 ||
+                count > INT_MAX) {
+                fprintf (stderr, "Invalid max-session-count (0..%d)\\n",
+                         INT_MAX);
+                return -1;
+            }
+            max_session_count = count;
+        }
         else if (0 == strcmp (key, "connect-timeout"))
             connect_timeout = strtoul (value, NULL, 10);
         else if (0 == strcmp (key, "read-write-timeout"))
