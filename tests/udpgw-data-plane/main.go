@@ -107,7 +107,7 @@ func stages(maximum int) []int {
 
 func startEchoPool() (*echoPool, error) {
 	p := &echoPool{}
-	for _, ipText := range []string{"127.0.0.2", "127.0.0.3", "127.0.0.4", "127.0.0.5"} {
+	for _, ipText := range []string{"127.0.0.2", "127.0.0.3", "127.0.0.4", "127.0.0.5", "127.0.0.6", "127.0.0.7", "127.0.0.8", "127.0.0.9"} {
 		ip := net.ParseIP(ipText).To4()
 		port := 0
 		if len(p.addrs) > 0 { port = p.addrs[0].Port }
@@ -154,6 +154,10 @@ func makeMapping(addr *net.UDPAddr, global uint32) mapping {
 	return m
 }
 
+func keepaliveFrame() []byte {
+	return []byte{3, 0, 1, 0, 0}
+}
+
 func packet(m mapping, conid uint16, round uint32) []byte {
 	bodyLen := 3 + 6 + payloadLen
 	out := make([]byte, 2+bodyLen)
@@ -188,7 +192,7 @@ func (s *session) keepalive(ctx context.Context) {
 			select {
 			case <-ctx.Done(): return
 			case <-t.C:
-				if err := writeFrames(s, []byte{3, 0, 1, 0, 0}); err != nil {
+				if err := writeFrames(s, keepaliveFrame()); err != nil {
 					select { case s.err <- fmt.Errorf("keepalive: %w", err): default: }
 					return
 				}
@@ -258,7 +262,7 @@ func startServer(binary string, clients, mtu int) (*exec.Cmd, int, string, <-cha
 	for time.Now().Before(deadline) {
 		select { case e := <-done: return nil, 0, "", nil, fmt.Errorf("UDPGW exited during startup: %w", e); default: }
 		c, e := net.DialTimeout("tcp", addr, 100*time.Millisecond)
-		if e == nil { _ = c.Close(); return cmd, cmd.Process.Pid, addr, done, nil }
+		if e == nil { _ = c.Close(); time.Sleep(100 * time.Millisecond); return cmd, cmd.Process.Pid, addr, done, nil }
 		time.Sleep(20 * time.Millisecond)
 	}
 	_ = cmd.Process.Kill()
