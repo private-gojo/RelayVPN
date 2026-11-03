@@ -14,7 +14,7 @@ PAYLOAD_PREFIX = b"RV6B"
 
 def control_command(command):
     with socket.create_connection((PROXY_HOST, CONTROL_PORT), timeout=15) as conn:
-        conn.settimeout(15)
+        conn.settimeout(60)
         conn.sendall(command.encode("ascii") + b"\n")
         response = bytearray()
         while not response.endswith(b"\n"):
