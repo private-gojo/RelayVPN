@@ -52,11 +52,16 @@ type report struct {
 	Clients int `json:"tcp_clients"`
 	UDPMTU int `json:"udp_mtu"`
 	EchoServers int `json:"echo_servers"`
+	SourceBindIPs int `json:"source_bind_ips"`
 	EchoPackets uint64 `json:"echo_packets"`
 	EchoErrors uint64 `json:"echo_errors"`
 	PersistenceResponses int64 `json:"persistence_responses"`
 	PersistenceRoundTripMS int64 `json:"persistence_round_trip_ms"`
 	ServerPID int `json:"server_pid"`
+	FailedAt int `json:"failed_at_mappings,omitempty"`
+	FailureRound int `json:"failure_round,omitempty"`
+	CurrentResponses int64 `json:"current_responses,omitempty"`
+	Failure string `json:"failure,omitempty"`
 	Stages []stage `json:"stages"`
 }
 
@@ -310,12 +315,29 @@ func waitCount(c *counters, round int, want int64, errs <-chan error) error {
 	defer tick.Stop()
 	for c.round[round-1].Load() < want {
 		select {
-		case err := <-errs: return err
+		case err := <-errs: return fmt.Errorf("round %d received %d/%d replies before reader error: %w", round, c.round[round-1].Load(), want, err)
 		case <-timer.C: return fmt.Errorf("round %d timed out: %d/%d replies", round, c.round[round-1].Load(), want)
 		case <-tick.C:
 		}
 	}
 	return nil
+}
+
+func recordFailure(r *report, stageCount, round int, started time.Time, c *counters, pid int, echo *echoPool, cause error) error {
+	r.FailedAt = stageCount
+	r.FailureRound = round
+	r.CurrentResponses = c.round[round-1].Load()
+	r.Failure = cause.Error()
+	r.EchoPackets = echo.packets.Load()
+	r.EchoErrors = echo.errors.Load()
+	r.Stages = append(r.Stages, stage{
+		Mappings: stageCount,
+		RoundTripMS: time.Since(started).Milliseconds(),
+		Responses: r.CurrentResponses,
+		Server: procMetrics(pid),
+		Generator: procMetrics(os.Getpid()),
+	})
+	return cause
 }
 
 func writeReport(path string, r report) error {
@@ -373,7 +395,8 @@ func run(o options) error {
 	}
 
 	r := report{Requested: o.mappings, Clients: clients, UDPMTU: o.udpMTU,
-		EchoServers: len(echo.conns), ServerPID: pid, Stages: make([]stage, 0, len(stages(o.mappings)))}
+		EchoServers: len(echo.conns), SourceBindIPs: 4, ServerPID: pid,
+		Stages: make([]stage, 0, len(stages(o.mappings))+1)}
 	defer func() {
 		if e := writeReport(o.report, r); e != nil { fmt.Fprintf(os.Stderr, "write partial report: %v\n", e) }
 	}()
@@ -390,11 +413,11 @@ func run(o options) error {
 			if hi > lo {
 				batch := make([]byte, 0, (hi-lo)*23)
 				for i := lo; i < hi; i++ { batch = append(batch, packet(s.maps[i], uint16(i), 1)...)}
-				if err := writeFrames(s, batch); err != nil { return fmt.Errorf("send stage %d: %w", targetCount, err) }
+				if err := writeFrames(s, batch); err != nil { return recordFailure(&r, targetCount, 1, started, c, pid, echo, fmt.Errorf("send stage %d: %w", targetCount, err)) }
 			}
 			offset += len(s.maps)
 		}
-		if err := waitCount(c, 1, int64(targetCount), errs); err != nil { return err }
+		if err := waitCount(c, 1, int64(targetCount), errs); err != nil { return recordFailure(&r, targetCount, 1, started, c, pid, echo, err) }
 		entry := stage{Mappings: targetCount, RoundTripMS: time.Since(started).Milliseconds(),
 			Responses: c.round[0].Load(), Server: procMetrics(pid), Generator: procMetrics(os.Getpid())}
 		r.Stages = append(r.Stages, entry)
@@ -408,14 +431,14 @@ func run(o options) error {
 	for _, s := range sessions {
 		batch := make([]byte, 0, len(s.maps)*23)
 		for i, m := range s.maps { batch = append(batch, packet(m, uint16(i), 2)...)}
-		if err := writeFrames(s, batch); err != nil { return fmt.Errorf("send persistence round: %w", err) }
+		if err := writeFrames(s, batch); err != nil { return recordFailure(&r, o.mappings, 2, persistStart, c, pid, echo, fmt.Errorf("send persistence round: %w", err)) }
 	}
-	if err := waitCount(c, 2, int64(o.mappings), errs); err != nil { return err }
+	if err := waitCount(c, 2, int64(o.mappings), errs); err != nil { return recordFailure(&r, o.mappings, 2, persistStart, c, pid, echo, err) }
 	r.PersistenceResponses = c.round[1].Load()
 	r.PersistenceRoundTripMS = time.Since(persistStart).Milliseconds()
 	r.EchoPackets, r.EchoErrors = echo.packets.Load(), echo.errors.Load()
 	if r.EchoPackets < uint64(o.mappings*2) || r.EchoErrors != 0 {
-		return fmt.Errorf("UDP echo validation failed: packets=%d expected>=%d errors=%d", r.EchoPackets, o.mappings*2, r.EchoErrors)
+		return recordFailure(&r, o.mappings, 2, persistStart, c, pid, echo, fmt.Errorf("UDP echo validation failed: packets=%d expected>=%d errors=%d", r.EchoPackets, o.mappings*2, r.EchoErrors))
 	}
 	if err := writeReport(o.report, r); err != nil { return err }
 	fmt.Printf("PASS: active_mappings=%d clients=%d udp_mtu=%d echo_packets=%d persistence_replies=%d server_rss_kib=%d report=%s\n",
