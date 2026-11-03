@@ -1,7 +1,7 @@
 #include <stdio.h>
 #include <sys/socket.h>
 
-#include <system/BDatagram.h>
+#include <system/BDatagram_unix_flags.h>
 
 int main(void)
 {

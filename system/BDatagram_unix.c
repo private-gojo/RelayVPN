@@ -46,6 +46,7 @@
 #include <base/BLog.h>
 
 #include "BDatagram.h"
+#include "BDatagram_unix_flags.h"
 
 #include <generated/blog_channel_BDatagram.h>
 

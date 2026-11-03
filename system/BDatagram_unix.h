@@ -28,16 +28,11 @@
  */
 
 #include <misc/debugerror.h>
-#include <sys/socket.h>
 #include <base/DebugObject.h>
 
 #define BDATAGRAM_SEND_LIMIT 2
 #define BDATAGRAM_RECV_LIMIT 2
 
-static inline int bdatagram_unix_recv_message_truncated (int msg_flags)
-{
-    return (msg_flags & (MSG_TRUNC | MSG_CTRUNC)) != 0;
-}
 
 struct BDatagram_s {
     BReactor *reactor;
