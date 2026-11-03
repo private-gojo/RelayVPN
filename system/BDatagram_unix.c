@@ -417,6 +417,11 @@ static void do_recv (BDatagram *o)
     }
     
     ASSERT(bytes >= 0)
+    if (bdatagram_unix_recv_message_truncated(msg.msg_flags)) {
+        BLog(BLOG_WARNING, "dropping truncated UDP datagram or control data");
+        BPending_Set(&o->recv.job);
+        return;
+    }
     ASSERT(bytes <= o->recv.mtu)
     
     // read returned address
