@@ -800,7 +800,7 @@ int parse_arguments (int argc, char *argv[])
                 fprintf(stderr, "%s: requires an argument\n", arg);
                 return 0;
             }
-            if ((options.udpgw_max_connections = atoi(argv[i + 1])) <= 0) {
+            if (!parse_int_option(argv[i + 1], 1, UINT16_MAX + 1, &options.udpgw_max_connections)) {
                 fprintf(stderr, "%s: wrong argument\n", arg);
                 return 0;
             }
@@ -811,7 +811,7 @@ int parse_arguments (int argc, char *argv[])
                 fprintf(stderr, "%s: requires an argument\n", arg);
                 return 0;
             }
-            if ((options.udpgw_connection_buffer_size = atoi(argv[i + 1])) <= 0) {
+            if (!parse_int_option(argv[i + 1], 1, INT_MAX, &options.udpgw_connection_buffer_size)) {
                 fprintf(stderr, "%s: wrong argument\n", arg);
                 return 0;
             }

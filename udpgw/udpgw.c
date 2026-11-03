@@ -31,6 +31,7 @@
 #include <stdarg.h>
 #include <stdlib.h>
 #include <limits.h>
+#include <errno.h>
 
 #include <protocol/udpgw_proto.h>
 #include <misc/debug.h>
@@ -377,6 +378,19 @@ void print_version (void)
     printf(GLOBAL_PRODUCT_NAME" "PROGRAM_NAME" "GLOBAL_VERSION"\n"GLOBAL_COPYRIGHT_NOTICE"\n");
 }
 
+static int parse_int_option (const char *value, int minimum, int maximum, int *result)
+{
+    char *end = NULL;
+    errno = 0;
+    long parsed = strtol(value, &end, 10);
+    if (errno || end == value || *end != '\0' || parsed < minimum || parsed > maximum) {
+        return 0;
+    }
+
+    *result = (int)parsed;
+    return 1;
+}
+
 int parse_arguments (int argc, char *argv[])
 {
     if (argc <= 0) {
@@ -497,7 +511,7 @@ int parse_arguments (int argc, char *argv[])
                 fprintf(stderr, "%s: requires an argument\n", arg);
                 return 0;
             }
-            if ((options.udp_mtu = atoi(argv[i + 1])) < 0) {
+            if (!parse_int_option(argv[i + 1], 0, DEFAULT_UDP_MTU, &options.udp_mtu)) {
                 fprintf(stderr, "%s: wrong argument\n", arg);
                 return 0;
             }
@@ -508,7 +522,7 @@ int parse_arguments (int argc, char *argv[])
                 fprintf(stderr, "%s: requires an argument\n", arg);
                 return 0;
             }
-            if ((options.max_clients = atoi(argv[i + 1])) <= 0) {
+            if (!parse_int_option(argv[i + 1], 1, INT_MAX, &options.max_clients)) {
                 fprintf(stderr, "%s: wrong argument\n", arg);
                 return 0;
             }
@@ -519,7 +533,7 @@ int parse_arguments (int argc, char *argv[])
                 fprintf(stderr, "%s: requires an argument\n", arg);
                 return 0;
             }
-            if ((options.max_connections_for_client = atoi(argv[i + 1])) <= 0) {
+            if (!parse_int_option(argv[i + 1], 1, UINT16_MAX + 1, &options.max_connections_for_client)) {
                 fprintf(stderr, "%s: wrong argument\n", arg);
                 return 0;
             }
@@ -530,7 +544,7 @@ int parse_arguments (int argc, char *argv[])
                 fprintf(stderr, "%s: requires an argument\n", arg);
                 return 0;
             }
-            if ((options.client_socket_sndbuf = atoi(argv[i + 1])) < 0) {
+            if (!parse_int_option(argv[i + 1], 0, INT_MAX, &options.client_socket_sndbuf)) {
                 fprintf(stderr, "%s: wrong argument\n", arg);
                 return 0;
             }
@@ -542,7 +556,7 @@ int parse_arguments (int argc, char *argv[])
                 return 0;
             }
             options.local_udp_addr = argv[i + 1];
-            if ((options.local_udp_num_ports = atoi(argv[i + 2])) < 0) {
+            if (!parse_int_option(argv[i + 2], 0, UINT16_MAX + 1, &options.local_udp_num_ports)) {
                 fprintf(stderr, "%s: wrong argument\n", arg);
                 return 0;
             }
@@ -554,7 +568,7 @@ int parse_arguments (int argc, char *argv[])
                 return 0;
             }
             options.local_udp_ip6_addr = argv[i + 1];
-            if ((options.local_udp_ip6_num_ports = atoi(argv[i + 2])) < 0) {
+            if (!parse_int_option(argv[i + 2], 0, UINT16_MAX + 1, &options.local_udp_ip6_num_ports)) {
                 fprintf(stderr, "%s: wrong argument\n", arg);
                 return 0;
             }
