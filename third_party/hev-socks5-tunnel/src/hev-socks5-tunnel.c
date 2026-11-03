@@ -176,7 +176,7 @@ hev_socks5_tunnel_insert_session (HevListNode *node)
     if (!max_session_count)
         return;
 
-    while (session_count >= max_session_count)
+    while (session_count > max_session_count)
         hev_socks5_tunnel_evict_session (hev_list_first (&session_set));
 }
 
