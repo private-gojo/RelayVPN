@@ -33,10 +33,14 @@ def main():
     parser.add_argument("--timeout-ms", type=int, default=20000)
     parser.add_argument("--settle-ms", type=int, default=2000)
     parser.add_argument("--response-seconds", type=float, default=6.0)
+    parser.add_argument("--send-batch-size", type=int, default=64)
+    parser.add_argument("--send-batch-delay-ms", type=float, default=25.0)
     args = parser.parse_args()
 
     if args.flows < 1 or args.expected < 0 or args.expected > args.flows:
         raise SystemExit("invalid flow or expected count")
+    if args.send_batch_size < 1 or args.send_batch_delay_ms < 0:
+        raise SystemExit("invalid send pacing settings")
 
     reset = control_command("RESET")
     if reset != "OK RESET":
@@ -61,6 +65,12 @@ def main():
                 sock.sendto(payload, (DEST_HOST, DEST_PORT_BASE + index))
             except OSError as exc:
                 send_errors.append((index, str(exc)))
+            if (
+                (index + 1) % args.send_batch_size == 0
+                and index + 1 < args.flows
+                and args.send_batch_delay_ms > 0
+            ):
+                time.sleep(args.send_batch_delay_ms / 1000)
 
         result = control_command(
             f"WAIT {args.wait_target} {args.timeout_ms} {args.settle_ms}"
