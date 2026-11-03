@@ -27,7 +27,7 @@ go run ./tests/udpgw-capacity/main.go \
 
 For non-loopback targets, pass `--source-ips` with source addresses that are already configured and routed on the load-generator host. Loopback tests automatically spread connections over eight `127.0.0.x` source addresses to reduce the single-source ephemeral-port ceiling.
 
-The harness records connection time, live-session count, generator/server RSS, peak RSS, file-descriptor counts, `RLIMIT_NOFILE`, estimated ephemeral source-port slots, and keepalive write counts. For an existing UDPGW listener, add `--udpgw-keepalive` to enable protocol keepalives; use `--keepalive-interval` to change the interval. It raises the soft file-descriptor limit when the hard limit permits; otherwise it reports the host limit that blocks the requested test.
+The harness records connection time, live-session count, generator/server RSS and peak RSS, virtual size/peak/data, thread count, file-descriptor counts, `RLIMIT_NOFILE`, estimated ephemeral source-port slots, and keepalive write counts. RSS is resident physical memory; VmSize/VmData expose allocated virtual address space that may not be resident yet. For an existing UDPGW listener, add `--udpgw-keepalive` to enable protocol keepalives; use `--keepalive-interval` to change the interval. It raises the soft file-descriptor limit when the hard limit permits; otherwise it reports the host limit that blocks the requested test.
 
 ## Active UDP data-plane benchmark
 
