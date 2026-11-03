@@ -62,7 +62,7 @@ jobs:
         run: |
           set -euo pipefail
           GO111MODULE=off go test -race ./tests/udpgw-capacity
-          sudo prlimit --pid "$" --nofile=200256:200256
+          sudo prlimit --pid "$BASHPID" --nofile=200256:200256
           ulimit -n 200256
           ulimit -Sn
           go run ./tests/udpgw-capacity/main.go \
