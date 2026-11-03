@@ -252,14 +252,14 @@ func (s *session) readLoop(c *counters) {
 	}
 }
 
-func startServer(binary string, clients, mtu int) (*exec.Cmd, int, string, <-chan error, error) {
+func startServer(binary string, clients, maxConnections, mtu int) (*exec.Cmd, int, string, <-chan error, error) {
 	probe, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil { return nil, 0, "", nil, err }
 	addr := probe.Addr().String()
 	_ = probe.Close()
 	cmd := exec.Command(binary, "--listen-addr", addr,
 		"--max-clients", strconv.Itoa(clients),
-		"--max-connections-for-client", "65536",
+		"--max-connections-for-client", strconv.Itoa(maxConnections),
 		"--udp-mtu", strconv.Itoa(mtu),
 		"--local-udp-bind-addr", "127.0.0.10:0",
 		"--local-udp-bind-addr", "127.0.0.11:0",
