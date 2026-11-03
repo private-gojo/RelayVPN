@@ -134,6 +134,7 @@ jobs:
             local expected_proxy_records="${12:-$expected}"
             local wait_target="${13:-$expected}"
             local ip_version="${14:-4}"
+            local udp_transport="${15:-udp}"
             local ipv6_config=""
             local config="$ROOT/$label.yml"
             if [[ "$ip_version" == "6" ]]; then ipv6_config="ipv6: fd00:198:18::1"; fi
@@ -149,7 +150,7 @@ jobs:
           socks5:
             address: 10.200.0.1
             port: 1080
-            udp: 'udp'
+            udp: '$udp_transport'
           misc:
             log-file: stderr
             log-level: info
