@@ -1,11 +1,35 @@
 package main
 
 import (
+	"bytes"
+	"io"
 	"net"
 	"reflect"
 	"testing"
 	"time"
 )
+
+func TestWriteUDPGWKeepaliveFrame(t *testing.T) {
+	client, server := net.Pipe()
+	defer client.Close()
+	defer server.Close()
+
+	done := make(chan error, 1)
+	go func() {
+		done <- writeUDPGWKeepalive(client)
+	}()
+
+	got := make([]byte, len(udpgwKeepaliveFrame))
+	if _, err := io.ReadFull(server, got); err != nil {
+		t.Fatalf("read keepalive frame: %v", err)
+	}
+	if !bytes.Equal(got, []byte{3, 0, 1, 0, 0}) {
+		t.Fatalf("keepalive frame = %v, want [3 0 1 0 0]", got)
+	}
+	if err := <-done; err != nil {
+		t.Fatalf("write keepalive frame: %v", err)
+	}
+}
 
 func TestBuildStagesAdaptive(t *testing.T) {
 	got := buildStages(100000)
