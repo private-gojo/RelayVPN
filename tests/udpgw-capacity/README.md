@@ -29,8 +29,22 @@ For non-loopback targets, pass `--source-ips` with source addresses that are alr
 
 The harness records connection time, live-session count, generator/server RSS, peak RSS, file-descriptor counts, `RLIMIT_NOFILE`, estimated ephemeral source-port slots, and keepalive write counts. For an existing UDPGW listener, add `--udpgw-keepalive` to enable protocol keepalives; use `--keepalive-interval` to change the interval. It raises the soft file-descriptor limit when the hard limit permits; otherwise it reports the host limit that blocks the requested test.
 
+## Active UDP data-plane benchmark
+
+~~~sh
+GO111MODULE=off go test -race ./tests/udpgw-data-plane
+
+go run ./tests/udpgw-data-plane/main.go \
+  --binary ./build/udpgw/badvpn-udpgw \
+  --mappings 100000 \
+  --udp-mtu 1500 \
+  --report ./udpgw-data-plane.json
+~~~
+
+This benchmark creates real UDPGW mappings against eight local UDP echo endpoints, verifies the echoed payload for every mapping, then sends a second datagram through every mapping to confirm persistence. It uses up to two TCP client sessions because each client's mapping ID is 16-bit. The benchmark MTU is explicitly set to 1500; this does not change the production default MTU.
+
 ## Measurement boundary
 
-This test measures connected TCP client sessions and the `--max-clients` guard only. It does not create UDPGW protocol mappings, exchange UDP payloads, or measure throughput/latency. Those need a separate protocol-aware data-plane test.
+The TCP-session harness measures connected client sessions and the `--max-clients` guard. The separate active-mapping harness measures UDP mapping creation, request/response delivery, persistence, RSS, and file descriptors. Neither is a sustained throughput benchmark; throughput and latency distribution require a separate traffic-rate test.
 
 Hev requires a SOCKS5-aware driver and its own runtime/configuration; a raw TCP session test is not a valid Hev capacity comparison.
