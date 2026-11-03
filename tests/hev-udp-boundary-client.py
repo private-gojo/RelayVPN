@@ -8,6 +8,7 @@ import time
 PROXY_HOST = os.environ.get("HEV_BOUNDARY_PROXY_HOST", "10.200.0.1")
 CONTROL_PORT = 1082
 DEST_HOST = os.environ.get("HEV_BOUNDARY_DEST_HOST", "198.51.100.10")
+DEST_HOST_V6 = os.environ.get("HEV_BOUNDARY_DEST_HOST_V6", "2001:db8::10")
 DEST_PORT_BASE = 20000
 PAYLOAD_PREFIX = b"RV6B"
 
@@ -38,6 +39,7 @@ def main():
     parser.add_argument("--expected-proxy-records", type=int)
     parser.add_argument("--send-batch-size", type=int, default=64)
     parser.add_argument("--send-batch-delay-ms", type=float, default=25.0)
+    parser.add_argument("--ip-version", type=int, choices=(4, 6), default=4)
     args = parser.parse_args()
 
     if args.flows < 1 or args.expected < 0:
@@ -65,11 +67,14 @@ def main():
     )
 
     try:
+        family = socket.AF_INET6 if args.ip_version == 6 else socket.AF_INET
+        bind_address = ("::", 0) if args.ip_version == 6 else ("0.0.0.0", 0)
+        target_host = DEST_HOST_V6 if args.ip_version == 6 else DEST_HOST
         for index in range(args.flows):
-            sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            sock = socket.socket(family, socket.SOCK_DGRAM)
             sock.setblocking(False)
             sock.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 4 * 1024 * 1024)
-            sock.bind(("0.0.0.0", 0))
+            sock.bind(bind_address)
             selector.register(sock, selectors.EVENT_READ, index)
             sockets.append(sock)
 
@@ -82,8 +87,9 @@ def main():
                     + sequence.to_bytes(4, "big")
                     + (b"X" * (args.payload_size - 12))
                 )
+                target = (target_host, DEST_PORT_BASE + index, 0, 0) if args.ip_version == 6 else (target_host, DEST_PORT_BASE + index)
                 try:
-                    sock.sendto(payload, (DEST_HOST, DEST_PORT_BASE + index))
+                    sock.sendto(payload, target)
                 except OSError as exc:
                     send_errors.append((index, sequence, str(exc)))
                 sent += 1
@@ -106,7 +112,7 @@ def main():
             events = selector.select(min(0.25, max(0, deadline - time.monotonic())))
             for key, _ in events:
                 try:
-                    data, _ = key.fileobj.recvfrom(4096)
+                    data, _ = key.fileobj.recvfrom(65535)
                 except BlockingIOError:
                     continue
                 if len(data) >= 12 and data[:4] == PAYLOAD_PREFIX:
@@ -133,7 +139,7 @@ def main():
         missing = sorted(expected_ids - responses)
         print(
             "BOUNDARY_RESULT "
-            f"flows={args.flows} packets_per_flow={args.packets_per_flow} "
+            f"ip_version={args.ip_version} flows={args.flows} packets_per_flow={args.packets_per_flow} "
             f"sent={sent} payload_size={args.payload_size} "
             f"proxy_records={recorded} expected_proxy_records={expected_proxy_records} "
             f"responses={len(responses)} expected={args.expected} "
