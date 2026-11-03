@@ -28,7 +28,7 @@ int main(void)
     struct ipv6_header header;
     memset(&header, 0, sizeof(header));
 
-    uint8_t payload[64] = {0};
+    uint8_t payload[256] = {0};
     uint8_t *udp_data = NULL;
     int udp_data_len = -1;
 
@@ -84,6 +84,24 @@ int main(void)
     payload[3] = 0;
     if (ipv6_udp_payload(&header, payload, 7, &udp_data, &udp_data_len)) {
         fprintf(stderr, "Truncated IPv6 extension was accepted\n");
+        return 1;
+    }
+
+    header.next_header = IPV6_NEXT_HOP_BY_HOP;
+    payload[0] = IPV6_NEXT_UDP;
+    payload[1] = 10;
+    if (ipv6_udp_payload(&header, payload, 16, &udp_data, &udp_data_len)) {
+        fprintf(stderr, "Oversized extension length was accepted\n");
+        return 1;
+    }
+
+    header.next_header = IPV6_NEXT_HOP_BY_HOP;
+    for (int i = 0; i < 17; i++) {
+        payload[i * 8] = (i == 16) ? IPV6_NEXT_UDP : IPV6_NEXT_HOP_BY_HOP;
+        payload[i * 8 + 1] = 0;
+    }
+    if (ipv6_udp_payload(&header, payload, 17 * 8, &udp_data, &udp_data_len)) {
+        fprintf(stderr, "Excessive IPv6 extension chain was accepted\n");
         return 1;
     }
 
