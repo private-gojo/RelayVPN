@@ -44,7 +44,7 @@ jobs:
     timeout-minutes: 45
     env:
       MAX_CLIENTS: ${{ github.event_name == 'push' && '100000' || inputs.max_clients || '10000' }}
-      MAX_MAPPINGS: ${{ github.event_name == 'push' && '1000' || inputs.max_mappings || '1000' }}
+      MAX_MAPPINGS: ${{ github.event_name == 'push' && contains(github.event.head_commit.message, '[capacity-100k]') && '100000' || github.event_name == 'push' && '1000' || inputs.max_mappings || '1000' }}
     steps:
       - name: Checkout RelayVPN
         uses: actions/checkout@v4
