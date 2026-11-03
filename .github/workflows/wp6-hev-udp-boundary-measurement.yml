@@ -262,6 +262,36 @@ jobs:
           check_invalid_udp_copy_buffer_count 99999999999999999999999999
           check_invalid_udp_copy_buffer_count 1x
 
+
+          check_invalid_max_session_count() {
+            local value="$1"
+            local label="max-session-invalid-$value"
+            local config="$ROOT/$label.yml"
+            local log="$ROOT/logs/$label-hev.log"
+            local status
+
+            cat > "$config" <<EOF
+          misc:
+            max-session-count: "$value"
+          EOF
+
+            set +e
+            sudo ip netns exec cli "$HEV_BIN" "$config" > "$log" 2>&1
+            status=$?
+            set -e
+
+            if [[ "$status" -eq 0 ]] || ! grep -q "Invalid max-session-count" "$log"; then
+              echo "$label was not rejected by config validation" >&2
+              cat "$log"
+              FAILURES+=("$label validation failed")
+            fi
+          }
+
+          check_invalid_max_session_count -1
+          check_invalid_max_session_count 2147483648
+          check_invalid_max_session_count 99999999999999999999999999
+          check_invalid_max_session_count 1x
+
           run_case udp-copy-buffer-1 0 1 1 1 0 64 0 1
           run_case udp-copy-buffer-64 0 1 1 1 0 64 0 64
           run_case udp-datagram-1746 0 1 1 1 0 64 0 10 2000 1746
