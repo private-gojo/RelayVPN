@@ -49,7 +49,7 @@ jobs:
           cmake --build "$RUNNER_TEMP/relayvpn-ci-build" \
             --target badvpn-tun2socks badvpn-udpgw hev-bin \
               tcp_ring_buffer_test tcp_ring_buffer_stress_test \
-              chunkbuffer2_test bproto_test tcp_window_config_test \
+              chunkbuffer2_test bproto_test tcp_window_config_test udp_proto_test \
             --parallel 2
 
       - name: Verify Hev has no vendored shared-library dependencies
@@ -76,6 +76,7 @@ jobs:
           "$TEST_DIR/chunkbuffer2_test"
           "$TEST_DIR/bproto_test"
           "$TEST_DIR/tcp_window_config_test"
+          "$TEST_DIR/udp_proto_test"
           bash tests/relayvpn-engine-dispatch.sh
           bash tests/relayvpn-doctor-test.sh
 
