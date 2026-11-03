@@ -83,6 +83,7 @@ jobs:
           bash tests/tunfd-cli-test.sh "$RUNNER_TEMP/relayvpn-ci-build/tun2socks/badvpn-tun2socks"
           sudo python3 tests/tunfd-runtime-smoke.py "$RUNNER_TEMP/relayvpn-ci-build/tun2socks/badvpn-tun2socks"
           python3 tests/udpgw-shutdown-smoke.py "$RUNNER_TEMP/relayvpn-ci-build/udpgw/badvpn-udpgw"
+          python3 tests/udpgw-client-scale-smoke.py "$RUNNER_TEMP/relayvpn-ci-build/udpgw/badvpn-udpgw" --clients 1000
           bash tests/udpgw-cli-validation.sh \
             "$RUNNER_TEMP/relayvpn-ci-build/tun2socks/badvpn-tun2socks" \
             "$RUNNER_TEMP/relayvpn-ci-build/udpgw/badvpn-udpgw"
