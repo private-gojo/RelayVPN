@@ -22,7 +22,7 @@ jobs:
         run: |
           set -euo pipefail
           sudo apt-get update
-          sudo apt-get install -y build-essential cmake gdb iproute2 iputils-ping python3
+          sudo apt-get install -y build-essential cmake iproute2 iputils-ping python3
           sudo modprobe tun || true
           test -c /dev/net/tun
           ulimit -n 65535
@@ -41,6 +41,7 @@ jobs:
           cmake -S . -B "$RUNNER_TEMP/relayvpn-wp6-hev-build" \
             -G "Unix Makefiles" \
             -DBUILD_HEV=ON \
+            -DCMAKE_C_FLAGS=-DHEV_WP6_BOUNDARY_TEST \
             -DBUILD_TUN2SOCKS=OFF \
             -DBUILD_CLIENT=OFF \
             -DBUILD_SERVER=OFF \
@@ -62,7 +63,7 @@ jobs:
           printf '#include <lwip/opt.h>\n' | gcc ${CFLAGS:-} -I"$HEV_LWIP/include" -I"$HEV_LWIP/ports/include" -dM -E -x c - | grep -E '^#define (MEMP_MEM_MALLOC|MEMP_NUM_UDP_PCB|LWIP_UDP) '
           grep -n "lwipopts.h" third_party/hev-socks5-tunnel/third-part/lwip/build/core/udp.dep || true
 
-      - name: Run session-count and UDP PCB boundary measurements
+      - name: Run session-count, UDP PCB, and per-session queue boundary measurements
         shell: bash
         run: |
           set -euo pipefail
@@ -124,11 +125,9 @@ jobs:
             local limit="$2"
             local flows="$3"
             local expected="$4"
+            local packets_per_flow="${5:-1}"
+            local pause_ms="${6:-0}"
             local config="$ROOT/$label.yml"
-            local log_level=info
-            if [[ "$label" == "session-limit-1" ]]; then
-              log_level=debug
-            fi
 
             echo "--- $label: max-session-count=$limit flows=$flows expected=$expected ---"
             cat > "$config" <<EOF
@@ -143,15 +142,16 @@ jobs:
             udp: 'udp'
           misc:
             log-file: stderr
-            log-level: $log_level
+            log-level: info
             connect-timeout: 10000
             udp-read-write-timeout: 120000
             max-session-count: $limit
             limit-nofile: 65535
           EOF
 
-            if [[ "$label" == "session-limit-1" ]]; then
-              sudo bash -c 'ulimit -n 65535; exec ip netns exec cli gdb --batch --return-child-result -ex run -ex "thread apply all bt full" --args "$1" "$2"' \
+            if [[ "$pause_ms" -gt 0 ]]; then
+              sudo env HEV_WP6_QUEUE_PAUSE_MS="$pause_ms" \
+                bash -c 'ulimit -n 65535; exec ip netns exec cli "$1" "$2"' \
                 _ "$HEV_BIN" "$config" > "$ROOT/logs/$label-hev.log" 2>&1 &
             else
               sudo bash -c 'ulimit -n 65535; exec ip netns exec cli "$1" "$2"' \
@@ -176,6 +176,7 @@ jobs:
 
             if sudo bash -c 'ulimit -n 65535; exec ip netns exec cli python3 "$@"' \
               _ "$CLIENT" --flows "$flows" --expected "$expected" \
+              --packets-per-flow "$packets_per_flow" \
               --wait-target "$expected" --timeout-ms 45000 \
               --settle-ms 2000 --response-seconds 6 \
               --send-batch-size 64 --send-batch-delay-ms 50; then
@@ -222,14 +223,20 @@ jobs:
           run_case session-limit-1 1 1 1
           run_case session-limit-2 2 2 2
           run_case session-limit-130 130 130 130
+          run_case udp-queue-512-boundary 0 1 512 640 1500
+          if ! grep -q "WP6_UDP_QUEUE_DROP frames=512 limit=512" \
+            "$ROOT/logs/udp-queue-512-boundary-hev.log"; then
+            echo "queue boundary probe did not observe the 512-frame drop guard" >&2
+            FAILURES+=("UDP queue boundary instrumentation not observed")
+          fi
           run_case udp-high-flow-1025 0 1025 1025
 
           {
             echo ""
             echo "### Interpretation"
             echo "- Session cap cases record the current source behavior: configured N permits up to N surviving sessions; excess sessions are evicted."
-            echo "- The 1,025-flow case is a high-flow smoke measurement, not an assumed PCB cap."
-            echo "- Queue 512/513 measurement is deferred: the current drop path has no exposed counter/high-water mark, so a packet flood alone cannot prove the internal queue boundary without adding test instrumentation."
+            echo "- The queue case sends 640 datagrams through one UDP flow with a test-only 1.5-second forwarding pause and checks the exact 512-frame admission boundary."
+            echo "- The 1,025-flow case is a high-flow smoke measurement; lwIP uses heap-backed UDP PCBs (MEMP_MEM_MALLOC=1), so MEMP_NUM_UDP_PCB is not a hard cap in this build."
           } >> "$GITHUB_STEP_SUMMARY"
 
           cp -a "$ROOT/logs/." "$ARTIFACT_DIR/"
