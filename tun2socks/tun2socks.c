@@ -1231,17 +1231,27 @@ int process_device_udp_packet (uint8_t *data, int data_len)
                 goto fail;
             }
             
-            // ignore non-UDP packets
-            if (data_len < sizeof(struct ipv6_header) || data[offsetof(struct ipv6_header, next_header)] != IPV6_NEXT_UDP) {
-                goto fail;
-            }
-            
             // parse IPv6 header
             struct ipv6_header ipv6_header;
             if (!ipv6_check(data, data_len, &ipv6_header, &data, &data_len)) {
                 goto fail;
             }
-            
+
+            // Skip supported extension headers before the UDP header.
+            uint8_t *udp_data;
+            int udp_data_len;
+            if (!ipv6_udp_payload(
+                &ipv6_header,
+                data,
+                data_len,
+                &udp_data,
+                &udp_data_len
+            )) {
+                goto fail;
+            }
+            data = udp_data;
+            data_len = udp_data_len;
+
             // parse UDP
             struct udp_header udp_header;
             if (!udp_check(data, data_len, &udp_header, &data, &data_len)) {
