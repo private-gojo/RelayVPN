@@ -22,13 +22,17 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: udpgw-capacity-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
   capacity:
     name: UDPGW adaptive capacity
     runs-on: ubuntu-latest
     timeout-minutes: 45
     env:
-      MAX_CLIENTS: ${{ inputs.max_clients || '10000' }}
+      MAX_CLIENTS: ${{ github.event_name == 'push' && '100000' || inputs.max_clients || '10000' }}
     steps:
       - name: Checkout RelayVPN
         uses: actions/checkout@v4
@@ -58,6 +62,9 @@ jobs:
         run: |
           set -euo pipefail
           GO111MODULE=off go test -race ./tests/udpgw-capacity
+          sudo prlimit --pid "$" --nofile=200256:200256
+          ulimit -n 200256
+          ulimit -Sn
           go run ./tests/udpgw-capacity/main.go \
             --binary "$RUNNER_TEMP/relayvpn-capacity-build/udpgw/badvpn-udpgw" \
             --max-clients "$MAX_CLIENTS" \
