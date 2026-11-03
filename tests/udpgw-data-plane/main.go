@@ -287,7 +287,9 @@ func (s *session) readLoop(c *counters) {
 			select { case s.err <- fmt.Errorf("negative response latency mapping=%d", id): default: }
 			return
 		}
-		s.latency[round-1][id] = uint64(latency.Microseconds())
+		latencyUS := latency.Microseconds()
+		if latencyUS == 0 { latencyUS = 1 }
+		s.latency[round-1][id] = uint64(latencyUS)
 		s.seen[round-1][id] = true
 		c.round[round-1].Add(1)
 	}
