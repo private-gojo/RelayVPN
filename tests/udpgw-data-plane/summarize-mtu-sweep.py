@@ -24,6 +24,8 @@ def load_reports(directory: Path) -> list[dict]:
             "stable": data.get("last_stable_mappings", 0),
             "rss_mib": round(server.get("rss_kib", 0) / 1024, 2),
             "hwm_mib": round(server.get("hwm_kib", 0) / 1024, 2),
+            "vmsize_mib": round(server.get("vm_size_kib", 0) / 1024, 2),
+            "vmdata_mib": round(server.get("vm_data_kib", 0) / 1024, 2),
             "fds": server.get("fd_count", 0),
             "p50_us": latest.get("p50_latency_us", 0),
             "p95_us": latest.get("p95_latency_us", 0),
@@ -46,7 +48,7 @@ def main() -> int:
         print("No MTU sweep reports found.", file=sys.stderr)
         return 1
 
-    headings = ["MTU", "Payload", "Stable maps", "RSS MiB", "HWM MiB", "FDs",
+    headings = ["MTU", "Payload", "Stable maps", "RSS MiB", "HWM MiB", "VmSize MiB", "VmData MiB", "FDs",
                 "p50 us", "p95 us", "p99 us", "PPS", "Echo Mbps", "Status"]
     rows = []
     for item in reports:
@@ -56,7 +58,8 @@ def main() -> int:
         rows.append([
             item.get("mtu", "-"), item.get("payload", "-"),
             item.get("stable", 0), item.get("rss_mib", "-"),
-            item.get("hwm_mib", "-"), item.get("fds", "-"),
+            item.get("hwm_mib", "-"), item.get("vmsize_mib", "-"),
+            item.get("vmdata_mib", "-"), item.get("fds", "-"),
             item.get("p50_us", "-"), item.get("p95_us", "-"),
             item.get("p99_us", "-"), item.get("pps", "-"),
             item.get("echo_mbps", "-"), status,
