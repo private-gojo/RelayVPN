@@ -68,7 +68,7 @@ func parseOptions() options {
 	flag.StringVar(&o.target, "target", "", "Existing TCP target host:port; mutually exclusive with --binary")
 	flag.IntVar(&o.maxClients, "max-clients", 100000, "Maximum concurrent TCP client sessions to attempt")
 	flag.StringVar(&o.steps, "steps", "", "Comma-separated ascending ramp stages; default is adaptive")
-	flag.IntVar(&o.workers, "workers", 128, "Maximum parallel connection attempts")
+	flag.IntVar(&o.workers, "workers", 64, "Maximum parallel connection attempts")
 	flag.DurationVar(&o.hold, "hold", 2*time.Second, "Hold and verify each stage")
 	flag.DurationVar(&o.connectTimeout, "connect-timeout", 5*time.Second, "Per-connection timeout")
 	flag.StringVar(&o.sourceIPs, "source-ips", "", "Comma-separated source IPs; loopback tests auto-spread over 8 loopback IPs")
@@ -202,13 +202,17 @@ func (d *dialPool) dial(ctx context.Context) (net.Conn, error) {
 type dialResult struct { conn net.Conn; err error }
 
 func openConnections(pool *dialPool, from, to, workers int) ([]net.Conn, time.Duration, error) {
-	count := to-from
-	if count <= 0 { return nil, 0, nil }
-	if workers > count { workers = count }
+	count := to - from
+	if count <= 0 {
+		return nil, 0, nil
+	}
+	if workers > count {
+		workers = count
+	}
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	jobs := make(chan struct{}, count)
-	results := make(chan dialResult, count)
+	jobs := make(chan struct{})
+	results := make(chan dialResult, workers)
 	var wg sync.WaitGroup
 	for i := 0; i < workers; i++ {
 		wg.Add(1)
@@ -220,16 +224,34 @@ func openConnections(pool *dialPool, from, to, workers int) ([]net.Conn, time.Du
 			}
 		}()
 	}
+	go func() {
+		defer close(jobs)
+		for i := 0; i < count; i++ {
+			select {
+			case jobs <- struct{}{}:
+			case <-ctx.Done():
+				return
+			}
+		}
+	}()
 	started := time.Now()
-	for i := 0; i < count; i++ { jobs <- struct{}{} }
-	close(jobs)
-	wg.Wait()
-	close(results)
+	go func() {
+		wg.Wait()
+		close(results)
+	}()
+
 	opened := make([]net.Conn, 0, count)
 	var firstErr error
 	for result := range results {
 		if result.err != nil {
-			if firstErr == nil { firstErr = result.err; cancel() }
+			if firstErr == nil {
+				firstErr = result.err
+				cancel()
+			}
+			continue
+		}
+		if firstErr != nil {
+			_ = result.conn.Close()
 			continue
 		}
 		opened = append(opened, result.conn)
@@ -377,8 +399,20 @@ func run(o options) error {
 		opened, connectDuration, dialErr := openConnections(pool, last, stage, o.workers)
 		conns = append(conns, opened...)
 		if dialErr != nil {
+			holdStart := time.Now()
+			time.Sleep(o.hold)
+			alive, aliveErr := countAlive(conns)
+			stageRecord := stageResult{
+				Clients: len(conns), ConnectMS: connectDuration.Milliseconds(),
+				HoldMS: time.Since(holdStart).Milliseconds(), Alive: alive,
+				Generator: metricsFor(os.Getpid()),
+			}
+			if serverPID != 0 {
+				stageRecord.Server = metricsFor(serverPID)
+			}
+			result.Stages = append(result.Stages, stageRecord)
 			result.FailedAt = stage
-			result.Failure = fmt.Sprintf("connection ramp failed at %d/%d clients: %v", len(conns), stage, dialErr)
+			result.Failure = fmt.Sprintf("connection ramp failed at %d/%d clients: %v; alive=%d; verify_error=%v", len(conns), stage, dialErr, alive, aliveErr)
 			break
 		}
 		holdStart := time.Now()
