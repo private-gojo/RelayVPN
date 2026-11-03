@@ -29,6 +29,8 @@ type options struct {
 	connectTimeout time.Duration
 	sourceIPs string
 	reportPath string
+	udpgwKeepalive bool
+	keepaliveInterval time.Duration
 }
 
 type processMetrics struct {
@@ -59,6 +61,8 @@ type report struct {
 	EphemeralPorts int `json:"ephemeral_ports_per_source_ip,omitempty"`
 	SourceIPCount int `json:"source_ip_count"`
 	EstimatedPortSlots int `json:"estimated_source_port_slots,omitempty"`
+	KeepaliveFramesSent uint64 `json:"keepalive_frames_sent,omitempty"`
+	KeepaliveWriteErrors uint64 `json:"keepalive_write_errors,omitempty"`
 	Stages []stageResult `json:"stages"`
 }
 
@@ -73,6 +77,8 @@ func parseOptions() options {
 	flag.DurationVar(&o.connectTimeout, "connect-timeout", 5*time.Second, "Per-connection timeout")
 	flag.StringVar(&o.sourceIPs, "source-ips", "", "Comma-separated source IPs; loopback tests auto-spread over 8 loopback IPs")
 	flag.StringVar(&o.reportPath, "report", "", "Optional JSON report path")
+	flag.BoolVar(&o.udpgwKeepalive, "udpgw-keepalive", false, "Send UDPGW protocol keepalives to an existing --target")
+	flag.DurationVar(&o.keepaliveInterval, "keepalive-interval", 5*time.Second, "Interval for UDPGW keepalive frames")
 	flag.Parse()
 	return o
 }
@@ -181,6 +187,69 @@ func metricsFor(pid int) processMetrics {
 		}
 	}
 	return m
+}
+
+type keepaliveManager struct {
+	add chan []net.Conn
+	stop chan struct{}
+	done chan struct{}
+	sent atomic.Uint64
+	errors atomic.Uint64
+}
+
+var udpgwKeepaliveFrame = []byte{3, 0, 1, 0, 0}
+
+func writeUDPGWKeepalive(conn net.Conn) error {
+	n, err := conn.Write(udpgwKeepaliveFrame)
+	if err != nil {
+		return err
+	}
+	if n != len(udpgwKeepaliveFrame) {
+		return io.ErrShortWrite
+	}
+	return nil
+}
+
+func startKeepaliveManager(interval time.Duration) *keepaliveManager {
+	m := &keepaliveManager{
+		add: make(chan []net.Conn),
+		stop: make(chan struct{}),
+		done: make(chan struct{}),
+	}
+	go func() {
+		defer close(m.done)
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+		var conns []net.Conn
+		for {
+			select {
+			case group := <-m.add:
+				conns = append(conns, group...)
+			case <-ticker.C:
+				for _, conn := range conns {
+					if err := writeUDPGWKeepalive(conn); err != nil {
+						m.errors.Add(1)
+					} else {
+						m.sent.Add(1)
+					}
+				}
+			case <-m.stop:
+				return
+			}
+		}
+	}()
+	return m
+}
+
+func (m *keepaliveManager) Add(conns []net.Conn) {
+	if len(conns) > 0 {
+		m.add <- conns
+	}
+}
+
+func (m *keepaliveManager) Close() {
+	close(m.stop)
+	<-m.done
 }
 
 type dialPool struct {
@@ -320,6 +389,12 @@ func run(o options) error {
 	if (o.binary == "") == (o.target == "") {
 		return errors.New("set exactly one of --binary or --target")
 	}
+	if o.binary != "" {
+		o.udpgwKeepalive = true
+	}
+	if o.udpgwKeepalive && o.keepaliveInterval <= 0 {
+		return errors.New("--keepalive-interval must be positive when UDPGW keepalives are enabled")
+	}
 	stages, err := parseStages(o.steps, o.maxClients)
 	if err != nil { return err }
 	soft, hard, err := raiseNoFileLimit(o.maxClients+256)
@@ -394,10 +469,18 @@ func run(o options) error {
 	pool := &dialPool{target:o.target, timeout:o.connectTimeout, ips:ips}
 	conns := make([]net.Conn, 0, o.maxClients)
 	defer func() { for _, conn := range conns { _ = conn.Close() } }()
+	var keepalives *keepaliveManager
+	if o.udpgwKeepalive {
+		keepalives = startKeepaliveManager(o.keepaliveInterval)
+		defer keepalives.Close()
+	}
 	last := 0
 	for _, stage := range stages {
 		opened, connectDuration, dialErr := openConnections(pool, last, stage, o.workers)
 		conns = append(conns, opened...)
+		if keepalives != nil {
+			keepalives.Add(opened)
+		}
 		if dialErr != nil {
 			holdStart := time.Now()
 			time.Sleep(o.hold)
@@ -441,6 +524,10 @@ func run(o options) error {
 		if err := verifyLimitRejected(o.target, o.connectTimeout); err != nil {
 			result.Failure = "max-clients enforcement check failed: "+err.Error()
 		}
+	}
+	if keepalives != nil {
+		result.KeepaliveFramesSent = keepalives.sent.Load()
+		result.KeepaliveWriteErrors = keepalives.errors.Load()
 	}
 	if err := writeReport(o.reportPath, result); err != nil { return fmt.Errorf("write JSON report: %w", err) }
 	if result.Failure != "" {
