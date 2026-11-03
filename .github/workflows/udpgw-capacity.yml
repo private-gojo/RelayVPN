@@ -16,6 +16,17 @@ on:
           - '25000'
           - '50000'
           - '100000'
+      max_mappings:
+        description: Maximum active UDPGW UDP mappings (tested at UDP MTU 1500)
+        required: true
+        type: choice
+        default: '1000'
+        options:
+          - '1000'
+          - '10000'
+          - '25000'
+          - '50000'
+          - '100000'
   schedule:
     - cron: '23 3 * * 1'
 
@@ -33,6 +44,7 @@ jobs:
     timeout-minutes: 45
     env:
       MAX_CLIENTS: ${{ github.event_name == 'push' && '100000' || inputs.max_clients || '10000' }}
+      MAX_MAPPINGS: ${{ github.event_name == 'push' && '1000' || inputs.max_mappings || '1000' }}
     steps:
       - name: Checkout RelayVPN
         uses: actions/checkout@v4
@@ -61,7 +73,7 @@ jobs:
       - name: Run adaptive capacity measurement
         run: |
           set -euo pipefail
-          GO111MODULE=off go test -race ./tests/udpgw-capacity
+          GO111MODULE=off go test -race ./tests/udpgw-capacity ./tests/udpgw-data-plane
           sudo prlimit --pid "$BASHPID" --nofile=200256:200256
           ulimit -n 200256
           ulimit -Sn
@@ -70,12 +82,19 @@ jobs:
             --max-clients "$MAX_CLIENTS" \
             --hold 2s \
             --report "$RUNNER_TEMP/udpgw-capacity.json"
+          go run ./tests/udpgw-data-plane/main.go \
+            --binary "$RUNNER_TEMP/relayvpn-capacity-build/udpgw/badvpn-udpgw" \
+            --mappings "$MAX_MAPPINGS" \
+            --udp-mtu 1500 \
+            --report "$RUNNER_TEMP/udpgw-data-plane.json"
 
       - name: Upload capacity report
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: udpgw-capacity-${{ github.run_number }}
-          path: ${{ runner.temp }}/udpgw-capacity.json
+          path: |
+            ${{ runner.temp }}/udpgw-capacity.json
+            ${{ runner.temp }}/udpgw-data-plane.json
           if-no-files-found: warn
           retention-days: 30
