@@ -76,7 +76,7 @@ def main() -> int:
         *(render(row) for row in rows),
         "",
     ]
-    summary = "\\n".join(lines)
+    summary = "\n".join(lines)
     (directory / "summary.md").write_text(summary, encoding="utf-8")
     print(summary)
     return 0
