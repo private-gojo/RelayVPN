@@ -40,6 +40,42 @@ int main(void)
         return 1;
     }
 
-    puts("PASS: IPv4 UDP zero, valid, and invalid checksum cases");
+    static const uint8_t ipv6_source[16] = {
+        0x20, 0x01, 0x0d, 0xb8, 0x00, 0x01, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01
+    };
+    static const uint8_t ipv6_dest[16] = {
+        0x20, 0x01, 0x0d, 0xb8, 0x00, 0x02, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x02
+    };
+
+    header.checksum = 0;
+    uint16_t ipv6_checksum = udp_ip6_checksum(
+        &header,
+        payload,
+        (uint16_t)sizeof(payload),
+        ipv6_source,
+        ipv6_dest
+    );
+    if (ipv6_checksum == 0) {
+        fprintf(stderr, "IPv6 UDP checksum generation produced an invalid value\\n");
+        return 1;
+    }
+
+    header.checksum = ipv6_checksum;
+    struct udp_header ipv6_verify_header = header;
+    ipv6_verify_header.checksum = 0;
+    if (udp_ip6_checksum(
+        &ipv6_verify_header,
+        payload,
+        (uint16_t)sizeof(payload),
+        ipv6_source,
+        ipv6_dest
+    ) != ipv6_checksum) {
+        fprintf(stderr, "IPv6 UDP checksum was not stable for odd-length payload\\n");
+        return 1;
+    }
+
+    puts("PASS: IPv4 UDP and IPv6 UDP checksum cases");
     return 0;
 }
