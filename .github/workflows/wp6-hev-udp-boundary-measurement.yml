@@ -279,6 +279,10 @@ jobs:
           run_case udp-high-flow-1025 0 1025 1025
           run_case udp-ipv6-single-flow 0 1 1 1 0 64 0 10 1500 12 1 1 6
           run_case udp-over-tcp-single-flow 0 1 1 1 0 64 0 10 1500 12 1 1 4 tcp
+          run_case udp-ipv6-datagram-1734 0 1 1 1 0 64 0 10 2000 1734 1 1 6
+          run_case udp-ipv6-datagram-1735-truncated 0 1 0 1 0 64 0 10 2000 1735 1 1 6
+          run_case udp-over-tcp-multiple-frames 0 1 16 16 0 64 0 10 1500 12 16 16 4 tcp
+          run_case udp-ipv6-over-tcp 0 1 1 1 0 64 0 10 1500 12 1 1 6 tcp
 
           {
             echo ""
