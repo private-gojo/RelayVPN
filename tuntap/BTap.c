@@ -572,6 +572,34 @@ void BTap_Send (BTap *o, uint8_t *data, int data_len)
 #endif
 }
 
+#ifdef BADVPN_LINUX
+
+void BTap_SendV (BTap *o, const struct iovec *iov, int iovcnt)
+{
+    DebugObject_Access(&o->d_obj);
+    DebugError_AssertNoError(&o->d_err);
+    ASSERT(iov)
+    ASSERT(iovcnt > 0)
+
+    size_t total_len = 0;
+    for (int i = 0; i < iovcnt; i++) {
+        if (iov[i].iov_len > (size_t)o->frame_mtu - total_len) {
+            BLog(BLOG_WARNING, "packet exceeds device MTU");
+            return;
+        }
+        total_len += iov[i].iov_len;
+    }
+
+    ssize_t bytes = writev(o->fd, iov, iovcnt);
+    if (bytes < 0) {
+        // Preserve BTap_Send's existing ignored-error behavior.
+    } else if ((size_t)bytes != total_len) {
+        BLog(BLOG_WARNING, "written %zd expected %zu", bytes, total_len);
+    }
+}
+
+#endif
+
 PacketRecvInterface * BTap_GetOutput (BTap *o)
 {
     DebugObject_Access(&o->d_obj);

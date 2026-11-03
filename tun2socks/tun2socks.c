@@ -31,6 +31,8 @@
 #include <stddef.h>
 #include <string.h>
 #include <limits.h>
+#include <errno.h>
+#include <stdlib.h>
 
 #include <misc/version.h>
 #include <misc/loggers_string.h>
@@ -109,6 +111,11 @@ struct {
     int loglevel;
     int loglevels[BLOG_NUM_CHANNELS];
     char *tundev;
+#ifndef BADVPN_USE_WINAPI
+    int use_tunfd;
+    int tunfd;
+    int tunmtu;
+#endif
     char *netif_ipaddr;
     char *netif_netmask;
     char *netif_ip6addr;
@@ -350,9 +357,24 @@ int main (int argc, char **argv)
     }
     
     // init TUN device
-    if (!BTap_Init(&device, &ss, options.tundev, device_error_handler, NULL, 1)) {
-        BLog(BLOG_ERROR, "BTap_Init failed");
-        goto fail3;
+#ifndef BADVPN_USE_WINAPI
+    if (options.use_tunfd) {
+        struct BTap_init_data init_data;
+        init_data.dev_type = BTAP_DEV_TUN;
+        init_data.init_type = BTAP_INIT_FD;
+        init_data.init.fd.fd = options.tunfd;
+        init_data.init.fd.mtu = options.tunmtu;
+        if (!BTap_Init2(&device, &ss, init_data, device_error_handler, NULL)) {
+            BLog(BLOG_ERROR, "BTap_Init2 failed");
+            goto fail3;
+        }
+    } else
+#endif
+    {
+        if (!BTap_Init(&device, &ss, options.tundev, device_error_handler, NULL, 1)) {
+            BLog(BLOG_ERROR, "BTap_Init failed");
+            goto fail3;
+        }
     }
     
     // NOTE: the order of the following is important:
@@ -521,6 +543,9 @@ void print_help (const char *name)
         "        [--loglevel <0-5/none/error/warning/notice/info/debug>]\n"
         "        [--channel-loglevel <channel-name> <0-5/none/error/warning/notice/info/debug>] ...\n"
         "        [--tundev <name>]\n"
+        #ifndef BADVPN_USE_WINAPI
+        "        [--tunfd <fd> --tunmtu <mtu>]\n"
+        #endif
         "        --netif-ipaddr <ipaddr>\n"
         "        --netif-netmask <ipnetmask>\n"
         "        --socks-server-addr <addr>\n"
@@ -544,6 +569,19 @@ void print_version (void)
     printf(GLOBAL_PRODUCT_NAME" "PROGRAM_NAME" "GLOBAL_VERSION"\n"GLOBAL_COPYRIGHT_NOTICE"\n");
 }
 
+static int parse_int_option (const char *value, int minimum, int maximum, int *result)
+{
+    char *end = NULL;
+    errno = 0;
+    long parsed = strtol(value, &end, 10);
+    if (errno || end == value || *end != '\0' || parsed < minimum || parsed > maximum) {
+        return 0;
+    }
+
+    *result = (int)parsed;
+    return 1;
+}
+
 int parse_arguments (int argc, char *argv[])
 {
     if (argc <= 0) {
@@ -562,6 +600,11 @@ int parse_arguments (int argc, char *argv[])
         options.loglevels[i] = -1;
     }
     options.tundev = NULL;
+#ifndef BADVPN_USE_WINAPI
+    options.use_tunfd = 0;
+    options.tunfd = -1;
+    options.tunmtu = 0;
+#endif
     options.netif_ipaddr = NULL;
     options.netif_netmask = NULL;
     options.netif_ip6addr = NULL;
@@ -660,6 +703,31 @@ int parse_arguments (int argc, char *argv[])
             options.tundev = argv[i + 1];
             i++;
         }
+        #ifndef BADVPN_USE_WINAPI
+        else if (!strcmp(arg, "--tunfd")) {
+            if (1 >= argc - i) {
+                fprintf(stderr, "%s: requires an argument\n", arg);
+                return 0;
+            }
+            if (!parse_int_option(argv[i + 1], 0, INT_MAX, &options.tunfd)) {
+                fprintf(stderr, "%s: wrong argument\n", arg);
+                return 0;
+            }
+            options.use_tunfd = 1;
+            i++;
+        }
+        else if (!strcmp(arg, "--tunmtu")) {
+            if (1 >= argc - i) {
+                fprintf(stderr, "%s: requires an argument\n", arg);
+                return 0;
+            }
+            if (!parse_int_option(argv[i + 1], 1, 65535, &options.tunmtu)) {
+                fprintf(stderr, "%s: wrong argument\n", arg);
+                return 0;
+            }
+            i++;
+        }
+        #endif
         else if (!strcmp(arg, "--netif-ipaddr")) {
             if (1 >= argc - i) {
                 fprintf(stderr, "%s: requires an argument\n", arg);
@@ -765,6 +833,21 @@ int parse_arguments (int argc, char *argv[])
         return 1;
     }
     
+#ifndef BADVPN_USE_WINAPI
+    if (options.use_tunfd && options.tundev) {
+        fprintf(stderr, "--tunfd and --tundev cannot both be used\n");
+        return 0;
+    }
+    if (options.use_tunfd && options.tunmtu <= 0) {
+        fprintf(stderr, "--tunmtu is required with --tunfd\n");
+        return 0;
+    }
+    if (!options.use_tunfd && options.tunmtu > 0) {
+        fprintf(stderr, "--tunmtu requires --tunfd\n");
+        return 0;
+    }
+#endif
+
     if (!options.netif_ipaddr) {
         fprintf(stderr, "--netif-ipaddr is required\n");
         return 0;
@@ -1240,31 +1323,56 @@ err_t common_netif_output (struct netif *netif, struct pbuf *p)
         return ERR_OK;
     }
     
-    // if there is just one chunk, send it directly, else via buffer
-    if (!p->next) {
-        if (p->len > BTap_GetMTU(&device)) {
+    int total_len = 0;
+    struct pbuf *chunk;
+    for (chunk = p; chunk; chunk = chunk->next) {
+        if (chunk->len > BTap_GetMTU(&device) - total_len) {
             BLog(BLOG_WARNING, "netif func output: no space left");
             goto out;
         }
-        
-        SYNC_FROMHERE
+        total_len += chunk->len;
+    }
+
+#ifdef BADVPN_LINUX
+    if (p->next) {
+        struct iovec iov[16];
+        int iov_count = 0;
+        int use_iov = 1;
+
+        for (chunk = p; chunk; chunk = chunk->next) {
+            if (chunk->len == 0) {
+                continue;
+            }
+            if (iov_count == (int)(sizeof(iov) / sizeof(iov[0]))) {
+                use_iov = 0;
+                break;
+            }
+            iov[iov_count].iov_base = chunk->payload;
+            iov[iov_count].iov_len = chunk->len;
+            iov_count++;
+        }
+
+        if (use_iov && iov_count > 0) {
+            SYNC_FROMHERE
+            BTap_SendV(&device, iov, iov_count);
+            SYNC_COMMIT
+            goto out;
+        }
+    }
+#endif
+
+    SYNC_FROMHERE
+    if (!p->next) {
         BTap_Send(&device, (uint8_t *)p->payload, p->len);
-        SYNC_COMMIT
     } else {
         int len = 0;
-        do {
-            if (p->len > BTap_GetMTU(&device) - len) {
-                BLog(BLOG_WARNING, "netif func output: no space left");
-                goto out;
-            }
-            memcpy(device_write_buf + len, p->payload, p->len);
-            len += p->len;
-        } while (p = p->next);
-        
-        SYNC_FROMHERE
+        for (chunk = p; chunk; chunk = chunk->next) {
+            memcpy(device_write_buf + len, chunk->payload, chunk->len);
+            len += chunk->len;
+        }
         BTap_Send(&device, device_write_buf, len);
-        SYNC_COMMIT
     }
+    SYNC_COMMIT
     
 out:
     return ERR_OK;
