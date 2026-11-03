@@ -62,6 +62,11 @@ int main(void)
         return 1;
     }
 
+    if (ipv6_checksum != hton16(0x3C27)) {
+        fprintf(stderr, "IPv6 UDP checksum did not match the reference vector\\n");
+        return 1;
+    }
+
     header.checksum = ipv6_checksum;
     struct udp_header ipv6_verify_header = header;
     ipv6_verify_header.checksum = 0;
