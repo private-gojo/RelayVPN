@@ -14,7 +14,7 @@ go run ./tests/udpgw-capacity/main.go \
   --report ./udpgw-capacity.json
 ~~~
 
-The default adaptive ramp is 1k, 2k, 5k, 10k, 25k, 50k, 75k, then the requested maximum. A failed stage stops the run and records the last stable stage.
+The default adaptive ramp is 1k, 2k, 5k, 10k, 25k, 50k, 75k, then the requested maximum. A failed stage stops the run and records the last stable stage. When the harness starts its own UDPGW process, it sends valid framed UDPGW keepalives every 5 seconds by default so the server's 20-second idle-client timeout does not invalidate long capacity runs.
 
 ## Existing TCP listener
 
@@ -27,7 +27,7 @@ go run ./tests/udpgw-capacity/main.go \
 
 For non-loopback targets, pass `--source-ips` with source addresses that are already configured and routed on the load-generator host. Loopback tests automatically spread connections over eight `127.0.0.x` source addresses to reduce the single-source ephemeral-port ceiling.
 
-The harness records connection time, live-session count, generator/server RSS, peak RSS, file-descriptor counts, `RLIMIT_NOFILE`, and estimated ephemeral source-port slots. It raises the soft file-descriptor limit when the hard limit permits; otherwise it reports the host limit that blocks the requested test.
+The harness records connection time, live-session count, generator/server RSS, peak RSS, file-descriptor counts, `RLIMIT_NOFILE`, estimated ephemeral source-port slots, and keepalive write counts. For an existing UDPGW listener, add `--udpgw-keepalive` to enable protocol keepalives; use `--keepalive-interval` to change the interval. It raises the soft file-descriptor limit when the hard limit permits; otherwise it reports the host limit that blocks the requested test.
 
 ## Measurement boundary
 
