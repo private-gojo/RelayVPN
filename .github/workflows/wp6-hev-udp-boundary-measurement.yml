@@ -129,13 +129,17 @@ jobs:
             local send_batch_size="${7:-64}"
             local send_batch_delay_ms="${8:-50}"
             local udp_copy_buffer_nums="${9:-10}"
+            local mtu="${10:-1500}"
+            local payload_size="${11:-12}"
+            local expected_proxy_records="${12:-$expected}"
+            local wait_target="${13:-$expected}"
             local config="$ROOT/$label.yml"
 
             echo "--- $label: max-session-count=$limit flows=$flows expected=$expected ---"
             cat > "$config" <<EOF
           tunnel:
             name: tun0
-            mtu: 1500
+            mtu: $mtu
             ipv4: 198.18.0.1
             icmp: 'off'
           socks5:
@@ -174,7 +178,9 @@ jobs:
             if sudo bash -c 'ulimit -n 65535; exec ip netns exec cli python3 "$@"' \
               _ "$CLIENT" --flows "$flows" --expected "$expected" \
               --packets-per-flow "$packets_per_flow" \
-              --wait-target "$expected" --timeout-ms 45000 \
+              --payload-size "$payload_size" \
+              --expected-proxy-records "$expected_proxy_records" \
+              --wait-target "$wait_target" --timeout-ms 45000 \
               --settle-ms 2000 --response-seconds 6 \
               --send-batch-size "$send_batch_size" \
               --send-batch-delay-ms "$send_batch_delay_ms"; then
@@ -249,6 +255,8 @@ jobs:
 
           run_case udp-copy-buffer-1 0 1 1 1 0 64 0 1
           run_case udp-copy-buffer-64 0 1 1 1 0 64 0 64
+          run_case udp-datagram-1746 0 1 1 1 0 64 0 10 2000 1746
+          run_case udp-datagram-1747-truncated 0 1 0 1 0 64 0 10 2000 1747 1 1
           run_case unlimited-small 0 16 16
           run_case session-limit-1 1 1 1
           run_case session-limit-2 2 2 2
@@ -267,6 +275,7 @@ jobs:
             echo "- Session cap cases record the current source behavior: configured N permits up to N surviving sessions; excess sessions are evicted."
             echo "- The queue case submits 640 datagrams in one burst through one UDP flow; the WP6 test build raises TUN_READ_BATCH to let the per-session queue reach its configured boundary."
             echo "- UDP copy-buffer counts 1 and 64 are accepted; zero, negative, oversized, overflow, and malformed values are rejected before tunnel initialization."
+            echo "- IPv4 SOCKS5 UDP payload 1,746 bytes fits the 1,756-byte receive slot including the 10-byte SOCKS5 UDP header; 1,747 bytes is expected to be dropped as MSG_TRUNC."
             echo "- The 1,025-flow case is a high-flow smoke measurement; lwIP uses heap-backed UDP PCBs (MEMP_MEM_MALLOC=1), so MEMP_NUM_UDP_PCB is not a hard cap in this build."
           } >> "$GITHUB_STEP_SUMMARY"
 
