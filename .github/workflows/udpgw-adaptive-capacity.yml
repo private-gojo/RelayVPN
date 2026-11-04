@@ -60,7 +60,7 @@ jobs:
           ulimit -n
           "$BIN" \
             --listen-addr 127.0.0.1:7300 \
-            --max-clients 16 \
+            --max-clients 1000 \
             --max-connections-for-client 65536 \
             --max-total-connections 100000 \
             --fd-limit 262144 \
@@ -87,6 +87,7 @@ jobs:
             sleep 1
           done
           grep -E 'capacity:|entering event loop' "$ROOT/udpgw.log"
+          grep -q 'reserve=1064' "$ROOT/udpgw.log"
 
           python3 tests/bench/udpgw_capacity.py \
             --host 127.0.0.1 \
