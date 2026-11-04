@@ -90,13 +90,14 @@ async def direct_reader(sock, state):
         return
 
 
-async def produce_data(session, state, target, payload_size, stop_at):
+async def produce_data(session, state, target, payload_size, stop_at, rate_pps):
     flows = session["flows"]
     if not flows:
         return
     writer = session["writer"]
     seq = 0
     cursor = 0
+    next_due = time.monotonic()
     while time.monotonic() < stop_at:
         for _ in range(BATCH_FRAMES):
             conid, token = flows[cursor]
@@ -107,6 +108,11 @@ async def produce_data(session, state, target, payload_size, stop_at):
             writer.write(make_packet(conid, target, payload))
             state["up_sent"] += 1
         await writer.drain()
+        if rate_pps > 0:
+            next_due += BATCH_FRAMES / rate_pps
+            await asyncio.sleep(max(0.0, next_due - time.monotonic()))
+        else:
+            await asyncio.sleep(0)
 
 
 async def keepalive_loop(session, stop_at):
@@ -205,7 +211,10 @@ async def worker_async(worker_id, sessions_spec, target, payload_size, direction
             tasks.append(asyncio.create_task(keepalive_loop(session, stop_at)))
             if direction in ("up", "bidi"):
                 tasks.append(asyncio.create_task(
-                    produce_data(session, state, target[:2], payload_size, stop_at)
+                    produce_data(
+                        session, state, target[:2], payload_size, stop_at,
+                        args.up_rate_pps / args.clients if args.up_rate_pps else 0,
+                    )
                 ))
 
         if worker_id == 0 and direct_sock is not None:
@@ -334,7 +343,7 @@ def read_final_json(proc):
 def run_case(args):
     if args.flows < 1 or args.clients < 1 or args.workers < 1:
         raise SystemExit("flows, clients, and workers must be positive")
-    if args.duration <= 0 or args.down_rate_pps < 0:
+    if args.duration <= 0 or args.up_rate_pps < 0 or args.down_rate_pps < 0:
         raise SystemExit("duration must be positive and down-rate-pps non-negative")
     if args.flows > args.clients * 65536:
         raise SystemExit("legacy conid namespace exceeded: flows must be <= clients * 65536")
@@ -585,6 +594,7 @@ def run_case(args):
             "direction": args.direction,
             "duration_seconds": args.duration,
             "workers": worker_count,
+            "up_rate_pps": args.up_rate_pps,
             "down_rate_pps": args.down_rate_pps,
         },
         "environment": {
@@ -617,6 +627,7 @@ def main():
     parser.add_argument("--direction", choices=("up", "down", "bidi"), required=True)
     parser.add_argument("--duration", type=float, default=5.0)
     parser.add_argument("--workers", type=int, default=max(1, min(8, os.cpu_count() or 1)))
+    parser.add_argument("--up-rate-pps", type=int, default=0)
     parser.add_argument("--down-rate-pps", type=int, default=0)
     parser.add_argument("--output", default="-")
     args = parser.parse_args()

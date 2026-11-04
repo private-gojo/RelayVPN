@@ -122,6 +122,7 @@ jobs:
               --engine c --engine-bin "$C_BIN" --echo-bin "$ECHO_BIN" \
               --flows 16 --clients 4 --payload-size 64 \
               --direction "$direction" --duration 2 \
+              --up-rate-pps 10000 --down-rate-pps 10000 \
               --workers 2 \
               --output "wp7c-benchmark-reports/smoke-c-$direction.json"
           done
@@ -135,6 +136,7 @@ jobs:
               --engine rust --engine-bin "$RUST_BIN" --echo-bin "$ECHO_BIN" \
               --flows 16 --clients 4 --payload-size 64 \
               --direction "$direction" --duration 2 \
+              --up-rate-pps 10000 --down-rate-pps 10000 \
               --workers 2 \
               --output "wp7c-benchmark-reports/smoke-rust-$direction.json"
           done
