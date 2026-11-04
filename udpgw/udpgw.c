@@ -31,11 +31,13 @@
 #include <stdarg.h>
 #include <stdlib.h>
 #include <limits.h>
+#include <stdint.h>
 #include <errno.h>
 
 #ifdef BADVPN_LINUX
 #include <dirent.h>
 #include <sys/resource.h>
+#include <sys/sysinfo.h>
 #endif
 
 #include <protocol/udpgw_proto.h>
@@ -192,6 +194,9 @@ static int process_arguments (void);
 static int parse_integer_argument (const char *value, int min_value, int max_value, int *out);
 static int configure_capacity (void);
 static int count_open_fds (void);
+static int read_uint64_file (const char *path, uint64_t *value);
+static int detect_memory_budget (uint64_t *limit, uint64_t *used, uint64_t *budget);
+static uint64_t chunk_buffer_allocation (uint64_t mtu);
 static void signal_handler (void *unused);
 static void listener_handler (BListener *listener);
 static void client_free (struct client *client);
@@ -395,6 +400,108 @@ int count_open_fds (void)
 #endif
 }
 
+int read_uint64_file (const char *path, uint64_t *value)
+{
+    FILE *file = fopen(path, "r");
+    if (!file) {
+        return 0;
+    }
+
+    char buffer[128];
+    if (!fgets(buffer, sizeof(buffer), file)) {
+        fclose(file);
+        return 0;
+    }
+    fclose(file);
+
+    if (!buffer[0] || buffer[0] == 'm' || buffer[0] == 'M' || buffer[0] == '-') {
+        return 0;
+    }
+
+    errno = 0;
+    char *end = NULL;
+    unsigned long long parsed = strtoull(buffer, &end, 10);
+    if (errno == ERANGE || end == buffer) {
+        return 0;
+    }
+
+    while (*end == ' ' || *end == '\t' || *end == '\r' || *end == '\n') {
+        end++;
+    }
+    if (*end != '\0' || parsed > UINT64_MAX / 2) {
+        return 0;
+    }
+
+    *value = (uint64_t)parsed;
+    return 1;
+}
+
+int detect_memory_budget (uint64_t *limit, uint64_t *used, uint64_t *budget)
+{
+#ifdef BADVPN_LINUX
+    uint64_t memory_limit = 0;
+    uint64_t memory_used = 0;
+    int have_limit =
+        read_uint64_file("/sys/fs/cgroup/memory.max", &memory_limit) &&
+        read_uint64_file("/sys/fs/cgroup/memory.current", &memory_used);
+
+    if (!have_limit) {
+        have_limit =
+            read_uint64_file("/sys/fs/cgroup/memory/memory.limit_in_bytes", &memory_limit) &&
+            read_uint64_file("/sys/fs/cgroup/memory/memory.usage_in_bytes", &memory_used);
+    }
+
+    if (have_limit && memory_limit > 0 && memory_limit < UINT64_MAX / 2) {
+        uint64_t available = memory_limit > memory_used ? memory_limit - memory_used : 0;
+        uint64_t reserve = memory_limit / 4;
+        const uint64_t minimum_reserve = 128ULL * 1024ULL * 1024ULL;
+        if (reserve < minimum_reserve) {
+            reserve = minimum_reserve;
+        }
+
+        *limit = memory_limit;
+        *used = memory_used;
+        *budget = available > reserve ? available - reserve : 0;
+        return 1;
+    }
+
+    // Fall back to host-available memory when no finite cgroup limit is exposed.
+    FILE *file = fopen("/proc/meminfo", "r");
+    if (file) {
+        char key[64];
+        unsigned long long amount;
+        char unit[16];
+        while (fscanf(file, "%63s %llu %15s", key, &amount, unit) == 3) {
+            if (!strcmp(key, "MemAvailable:") && !strcmp(unit, "kB")) {
+                uint64_t available = (uint64_t)amount * 1024ULL;
+                *limit = available;
+                *used = 0;
+                *budget = available / 2;
+                fclose(file);
+                return 1;
+            }
+        }
+        fclose(file);
+    }
+
+    struct sysinfo info;
+    if (sysinfo(&info) == 0) {
+        uint64_t available = ((uint64_t)info.freeram + (uint64_t)info.bufferram) * info.mem_unit;
+        *limit = available;
+        *used = 0;
+        *budget = available / 2;
+        return available > 0;
+    }
+#endif
+
+    return 0;
+}
+
+uint64_t chunk_buffer_allocation (uint64_t mtu)
+{
+    return 8ULL * (1ULL + ((mtu + 3ULL) / 4ULL));
+}
+
 int configure_capacity (void)
 {
     effective_max_total_connections = options.max_total_connections;
@@ -450,10 +557,37 @@ int configure_capacity (void)
         effective_max_total_connections = fd_capacity;
     }
 
+    uint64_t memory_limit = 0;
+    uint64_t memory_used = 0;
+    uint64_t memory_budget = 0;
+    if (detect_memory_budget(&memory_limit, &memory_used, &memory_budget)) {
+        uint64_t pp_buffer = chunk_buffer_allocation((uint64_t)pp_mtu);
+        uint64_t udp_send_buffer = chunk_buffer_allocation((uint64_t)options.udp_mtu);
+        uint64_t udp_receive_buffer = (uint64_t)options.udp_mtu;
+        uint64_t per_mapping = pp_buffer + udp_send_buffer + udp_receive_buffer +
+                               (uint64_t)sizeof(struct connection) + 65536ULL;
+
+        // Add a 25% safety factor for allocator and per-socket overhead.
+        per_mapping = (per_mapping * 5ULL + 3ULL) / 4ULL;
+        uint64_t memory_capacity = per_mapping ? memory_budget / per_mapping : 0;
+        if (memory_capacity < (uint64_t)effective_max_total_connections) {
+            effective_max_total_connections = memory_capacity > (uint64_t)INT_MAX ?
+                INT_MAX : (int)memory_capacity;
+        }
+
+        BLog(BLOG_NOTICE,
+             "capacity: memory_limit=%llu memory_used=%llu memory_budget=%llu bytes_per_mapping=%llu memory_mappings=%llu",
+             (unsigned long long)memory_limit, (unsigned long long)memory_used,
+             (unsigned long long)memory_budget, (unsigned long long)per_mapping,
+             (unsigned long long)memory_capacity);
+    } else {
+        BLog(BLOG_WARNING, "memory limit unavailable; UDPGW capacity will be FD-limited only");
+    }
+
     BLog(BLOG_NOTICE,
-         "capacity: fd_limit=%lu open_fds=%d reserve=%d requested_mappings=%d effective_mappings=%d",
+         "capacity: fd_limit=%lu open_fds=%d reserve=%d requested_mappings=%d fd_mappings=%d effective_mappings=%d",
          (unsigned long)effective_fd_limit, open_fds, fd_reserve,
-         options.max_total_connections, effective_max_total_connections);
+         options.max_total_connections, fd_capacity, effective_max_total_connections);
 #else
     BLog(BLOG_NOTICE,
          "capacity: platform FD auto-detection unavailable; configured mapping ceiling=%d",
@@ -677,8 +811,8 @@ int parse_arguments (int argc, char *argv[])
                 fprintf(stderr, "%s: requires an argument\n", arg);
                 return 0;
             }
-            if (!parse_integer_argument(argv[i + 1], 1, 100000, &options.max_total_connections)) {
-                fprintf(stderr, "%s: expected a value from 1 to 100000\n", arg);
+            if (!parse_integer_argument(argv[i + 1], 1000, 100000, &options.max_total_connections)) {
+                fprintf(stderr, "%s: expected a value from 1000 to 100000\n", arg);
                 return 0;
             }
             i++;
