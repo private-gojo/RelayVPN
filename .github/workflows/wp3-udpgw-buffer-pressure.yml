@@ -1,0 +1,72 @@
+name: WP3 - BadVPN UDPGW buffer pressure
+
+on:
+  push:
+    branches:
+      - work/wp3-udpgw-buffer-pressure-20261104
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: wp3-udpgw-buffer-pressure
+  cancel-in-progress: false
+
+jobs:
+  buffer-pressure:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout RelayVPN
+        uses: actions/checkout@v4
+
+      - name: Install build and test tools
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y build-essential cmake python3
+
+      - name: Validate the pressure harness
+        run: |
+          set -euo pipefail
+          python3 -m py_compile tests/udpgw-buffer-pressure/run_stress.py
+          python3 tests/udpgw-buffer-pressure/test_harness.py -v
+
+      - name: Build the existing BadVPN UDPGW target
+        run: |
+          set -euo pipefail
+          BUILD_DIR="$RUNNER_TEMP/wp3-udpgw-build"
+          cmake -S . -B "$BUILD_DIR" \
+            -G "Unix Makefiles" \
+            -DBUILD_NOTHING_BY_DEFAULT=ON \
+            -DBUILD_UDPGW=ON
+          cmake --build "$BUILD_DIR" --parallel 2 --target badvpn-udpgw
+          test -x "$BUILD_DIR/udpgw/badvpn-udpgw"
+
+      - name: Run UDP and TCP buffer-pressure phases
+        run: |
+          set -euo pipefail
+          UDPGW_BIN="$RUNNER_TEMP/wp3-udpgw-build/udpgw/badvpn-udpgw" \
+            python3 tests/udpgw-buffer-pressure/run_stress.py \
+              --mode all \
+              --udp-bursts 256,1024,4096,16384 \
+              --udp-payload-size 256 \
+              --client-replies 16384 \
+              --reply-payload-size 1200 \
+              --server-sndbuf 4096 \
+              --client-rcvbuf 4096 \
+              --max-clients 4092 \
+              --max-connections 4092 \
+              --phase-timeout 30 \
+              --artifact-dir wp3-artifacts
+
+      - name: Upload WP3 measurements and server logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: relayvpn-wp3-udpgw-buffer-pressure
+          path: wp3-artifacts/
+          if-no-files-found: warn
+          retention-days: 30
