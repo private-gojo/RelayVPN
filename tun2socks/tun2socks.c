@@ -68,6 +68,7 @@
 #include <tun2socks/tcp_ring_buffer.h>
 #include <tun2socks/SocksUdpGwClient.h>
 #include <socks_udp_client/SocksUdpClient.h>
+#include <structure/ChunkBuffer2.h>
 
 #ifndef BADVPN_USE_WINAPI
 #include <base/BLog_syslog.h>
@@ -264,6 +265,8 @@ static err_t client_sent_func (void *arg, struct tcp_pcb *tpcb, u16_t len);
 static void udp_send_packet_to_device (void *unused, BAddr local_addr, BAddr remote_addr, const uint8_t *data, int data_len);
 static unsigned int udpgw_stream_index (BAddr local_addr, BAddr remote_addr);
 static void free_udpgw_clients (void);
+static int configure_udpgw_client_capacity (int requested, int udp_payload_mtu, int *effective,
+                                            uint64_t *memory_budget, uint64_t *bytes_per_mapping);
 
 unsigned int udpgw_stream_index (BAddr local_addr, BAddr remote_addr)
 {
@@ -296,6 +299,113 @@ void free_udpgw_clients (void)
         num_udpgw_clients--;
         SocksUdpGwClient_Free(&udpgw_clients[num_udpgw_clients]);
     }
+}
+
+int read_memory_value (const char *path, uint64_t *value)
+{
+    FILE *file = fopen(path, "r");
+    if (!file) {
+        return 0;
+    }
+
+    char buffer[128];
+    if (!fgets(buffer, sizeof(buffer), file)) {
+        fclose(file);
+        return 0;
+    }
+    fclose(file);
+
+    char *end = NULL;
+    errno = 0;
+    unsigned long long parsed = strtoull(buffer, &end, 10);
+    if (errno == ERANGE || end == buffer || parsed > UINT64_MAX / 2) {
+        return 0;
+    }
+    while (*end == ' ' || *end == '\t' || *end == '\r' || *end == '\n') {
+        end++;
+    }
+    if (*end != '\0') {
+        return 0;
+    }
+
+    *value = (uint64_t)parsed;
+    return 1;
+}
+
+int detect_udpgw_client_memory_budget (uint64_t *budget)
+{
+#if defined(BADVPN_LINUX) || defined(__ANDROID__)
+    uint64_t limit = 0;
+    uint64_t used = 0;
+    int have_cgroup =
+        read_memory_value("/sys/fs/cgroup/memory.max", &limit) &&
+        read_memory_value("/sys/fs/cgroup/memory.current", &used);
+
+    if (!have_cgroup) {
+        have_cgroup =
+            read_memory_value("/sys/fs/cgroup/memory/memory.limit_in_bytes", &limit) &&
+            read_memory_value("/sys/fs/cgroup/memory/memory.usage_in_bytes", &used);
+    }
+
+    if (have_cgroup && limit > 0) {
+        uint64_t available = limit > used ? limit - used : 0;
+        uint64_t reserve = limit / 4;
+        const uint64_t minimum_reserve = 64ULL * 1024ULL * 1024ULL;
+        if (reserve < minimum_reserve) {
+            reserve = minimum_reserve;
+        }
+        *budget = available > reserve ? available - reserve : 0;
+        return 1;
+    }
+
+    FILE *file = fopen("/proc/meminfo", "r");
+    if (file) {
+        char line[256];
+        while (fgets(line, sizeof(line), file)) {
+            unsigned long long available_kb;
+            if (sscanf(line, "MemAvailable: %llu kB", &available_kb) == 1) {
+                fclose(file);
+                *budget = ((uint64_t)available_kb * 1024ULL) / 4ULL;
+                return *budget > 0;
+            }
+        }
+        fclose(file);
+    }
+#endif
+    return 0;
+}
+
+int configure_udpgw_client_capacity (int requested, int udp_payload_mtu, int *effective,
+                                     uint64_t *memory_budget, uint64_t *bytes_per_mapping)
+{
+    *effective = requested;
+    *memory_budget = 0;
+    *bytes_per_mapping = 0;
+
+    uint64_t budget = 0;
+    if (!detect_udpgw_client_memory_budget(&budget)) {
+        return 0;
+    }
+
+    int udpgw_mtu = udpgw_compute_mtu(udp_payload_mtu);
+    if (udpgw_mtu < 0 || udpgw_mtu > PACKETPROTO_MAXPAYLOAD) {
+        return 0;
+    }
+    uint64_t pp_mtu = (uint64_t)udpgw_mtu + sizeof(struct packetproto_header);
+    uint64_t chunk_blocks = 1ULL + ((pp_mtu + sizeof(struct ChunkBuffer2_block) - 1ULL) /
+                                     sizeof(struct ChunkBuffer2_block));
+    uint64_t packet_count = (uint64_t)options.udpgw_connection_buffer_size + 1ULL;
+    uint64_t packet_buffer_bytes = chunk_blocks * packet_count * sizeof(struct ChunkBuffer2_block);
+
+    uint64_t per_mapping = packet_buffer_bytes + sizeof(struct UdpGwClient_connection) + 2048ULL;
+    per_mapping = (per_mapping * 5ULL + 3ULL) / 4ULL;
+
+    uint64_t capacity = budget / per_mapping;
+    *effective = capacity < (uint64_t)requested ?
+        (capacity > INT_MAX ? INT_MAX : (int)capacity) : requested;
+    *memory_budget = budget;
+    *bytes_per_mapping = per_mapping;
+    return 1;
 }
 
 int main (int argc, char **argv)
@@ -428,18 +538,38 @@ int main (int argc, char **argv)
             goto fail4a;
         }
         
+        int effective_client_capacity = options.udpgw_max_connections;
+        uint64_t client_memory_budget = 0;
+        uint64_t client_bytes_per_mapping = 0;
+        if (configure_udpgw_client_capacity(options.udpgw_max_connections, udp_mtu,
+                &effective_client_capacity, &client_memory_budget, &client_bytes_per_mapping)) {
+            BLog(BLOG_NOTICE,
+                 "UDPGW client memory: budget=%llu bytes_per_mapping=%llu requested=%d effective=%d",
+                 (unsigned long long)client_memory_budget,
+                 (unsigned long long)client_bytes_per_mapping,
+                 options.udpgw_max_connections, effective_client_capacity);
+        } else {
+            BLog(BLOG_WARNING, "UDPGW client memory budget unavailable; using configured mapping limit %d",
+                 options.udpgw_max_connections);
+        }
+
+        if (effective_client_capacity < 1) {
+            BLog(BLOG_ERROR, "insufficient memory budget for even one UDPGW client mapping");
+            goto fail4a;
+        }
+
         // Keep each legacy UDPGW stream within its 16-bit connection-ID namespace.
-        num_udpgw_clients = (options.udpgw_max_connections + UINT16_MAX) / (UINT16_MAX + 1);
+        num_udpgw_clients = (effective_client_capacity + UINT16_MAX) / (UINT16_MAX + 1);
         if (num_udpgw_clients < 1) {
             num_udpgw_clients = 1;
         }
         if (num_udpgw_clients > UDPGW_MAX_STREAMS) {
             num_udpgw_clients = UDPGW_MAX_STREAMS;
         }
-        int per_stream_capacity = (options.udpgw_max_connections + num_udpgw_clients - 1) / num_udpgw_clients;
+        int per_stream_capacity = (effective_client_capacity + num_udpgw_clients - 1) / num_udpgw_clients;
 
-        BLog(BLOG_NOTICE, "UDPGW capacity: requested=%d streams=%d per_stream=%d",
-             options.udpgw_max_connections, num_udpgw_clients, per_stream_capacity);
+        BLog(BLOG_NOTICE, "UDPGW capacity: requested=%d effective=%d streams=%d per_stream=%d",
+             options.udpgw_max_connections, effective_client_capacity, num_udpgw_clients, per_stream_capacity);
 
         int initialized_streams = 0;
         while (initialized_streams < num_udpgw_clients) {
