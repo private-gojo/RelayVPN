@@ -51,7 +51,7 @@ def start_server():
         binary,
         "--listen-addr", "%s:%d" % (_SERVER_HOST, _SERVER_PORT),
         "--udp-mtu", "4096",
-        "--max-clients", "1024",
+        "--max-clients", "4092",
         "--max-connections-for-client", "2",
         "--client-socket-sndbuf", "65536",
         "--loglevel", "debug",
