@@ -272,7 +272,22 @@ def proc_snapshot(pid):
         stat = Path(f"/proc/{pid}/stat").read_text()
         fields = stat[stat.rfind(")") + 2:].split()
         ticks = int(fields[11]) + int(fields[12])
-        return {"rss_kb": rss_kb, "cpu_seconds": ticks / os.sysconf("SC_CLK_TCK")}
+        thread_cpu = {}
+        thread_dir = Path(f"/proc/{pid}/task")
+        for task in thread_dir.iterdir():
+            try:
+                thread_stat = (task / "stat").read_text()
+                thread_fields = thread_stat[thread_stat.rfind(")") + 2:].split()
+                thread_ticks = int(thread_fields[11]) + int(thread_fields[12])
+                thread_cpu[task.name] = thread_ticks / os.sysconf("SC_CLK_TCK")
+            except (OSError, ValueError, IndexError):
+                continue
+        return {
+            "rss_kb": rss_kb,
+            "cpu_seconds": ticks / os.sysconf("SC_CLK_TCK"),
+            "thread_count": len(thread_cpu),
+            "thread_cpu_seconds": thread_cpu,
+        }
     except (OSError, ValueError, IndexError):
         return {"rss_kb": None, "cpu_seconds": None}
 
@@ -469,6 +484,13 @@ def run_case(args):
         rss_delta_kb = max(0, server_after_setup["rss_kb"] - server_before["rss_kb"])
     paired = summarize_latency(valid_results)
     generator_cpu = sum(float(item.get("generator_cpu_seconds", 0)) for item in valid_results)
+    server_threads_before = cpu_before_measure.get("thread_cpu_seconds", {})
+    server_threads_after = server_after.get("thread_cpu_seconds", {})
+    server_thread_deltas = {
+        tid: max(0.0, value - server_threads_before[tid])
+        for tid, value in server_threads_after.items()
+        if tid in server_threads_before
+    }
     target_cpu_delta = None
     if target_after_setup["cpu_seconds"] is not None and target_after["cpu_seconds"] is not None:
         target_cpu_delta = max(0.0, target_after["cpu_seconds"] - target_after_setup["cpu_seconds"])
@@ -490,6 +512,19 @@ def run_case(args):
         "down_mbps": round(down_packets * args.payload_size * 8 / args.duration / 1_000_000, 3),
         "total_pps": round(total_packets / args.duration, 2),
         "server_cpu_seconds": None if cpu_delta is None else round(cpu_delta, 6),
+        "server_average_cores_used": None if cpu_delta is None else round(cpu_delta / args.duration, 4),
+        "server_cpu_util_percent_of_runner": (
+            None if cpu_delta is None else round(cpu_delta / args.duration / max(1, os.cpu_count() or 1) * 100, 2)
+        ),
+        "server_thread_count_before": cpu_before_measure.get("thread_count"),
+        "server_thread_count_after": server_after.get("thread_count"),
+        "server_threads_with_cpu_activity": sum(1 for value in server_thread_deltas.values() if value >= 0.05),
+        "server_peak_thread_cpu_seconds": (
+            None if not server_thread_deltas else round(max(server_thread_deltas.values()), 6)
+        ),
+        "server_thread_cpu_seconds": {
+            tid: round(value, 6) for tid, value in server_thread_deltas.items()
+        },
         "server_cpu_seconds_per_million_packets": (
             None if cpu_delta is None or total_packets == 0
             else round(cpu_delta * 1_000_000 / total_packets, 6)

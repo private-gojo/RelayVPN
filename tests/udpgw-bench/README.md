@@ -45,8 +45,9 @@ up/down/bidirectional × three runs. Cases execute serially to avoid cross-case 
   counted by load clients after forwarding.
 - Added latency is paired tunneled UDPGW RTT minus direct UDP target RTT using timestamped control
   probes. Control probes are a small extra load and are excluded from data pps.
-- Server CPU seconds per million forwarded packets and RSS delta per confirmed active flow are
-  sampled from `/proc`. Generator CPU time is also reported to expose a saturated load generator.
+- Server CPU seconds per million forwarded packets, average cores used, active CPU threads, peak
+  per-thread CPU, and RSS delta per confirmed active flow are sampled from `/proc`. Generator and
+  echo-target CPU are reported separately; saturation marks the throughput result invalid.
 - Mapping setup is confirmed by one target acknowledgement per flow. Missing acknowledgements
   make a case partial or failed.
 - Use `ramp.py` for the highest successful active-flow step. A single matrix case reports its

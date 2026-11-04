@@ -9,6 +9,8 @@ from pathlib import Path
 
 METRICS = ("up_pps", "down_pps", "total_pps", "up_mbps", "down_mbps",
            "server_cpu_seconds_per_million_packets", "server_rss_delta_bytes_per_flow",
+           "server_average_cores_used", "server_cpu_util_percent_of_runner",
+           "server_threads_with_cpu_activity", "server_peak_thread_cpu_seconds",
            "p50_added_us", "p99_added_us")
 
 
