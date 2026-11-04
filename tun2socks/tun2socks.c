@@ -180,6 +180,7 @@ BReactor ss;
 
 // set to 1 by terminate
 int quitting;
+int reactor_exit_code = 1;
 
 // TUN device
 BTap device;
@@ -429,6 +430,8 @@ int configure_udpgw_client_capacity (int requested, int udp_payload_mtu, int *ef
 
 int main (int argc, char **argv)
 {
+    int exit_code = 1;
+
     if (argc <= 0) {
         return 1;
     }
@@ -646,7 +649,7 @@ int main (int argc, char **argv)
     
     // enter event loop
     BLog(BLOG_NOTICE, "entering event loop");
-    BReactor_Exec(&ss);
+    exit_code = BReactor_Exec(&ss);
     
     // free clients
     LinkedList1Node *node;
@@ -693,7 +696,7 @@ fail1:
 fail0:
     DebugObjectGlobal_Finish();
     
-    return 1;
+    return exit_code;
 }
 
 void terminate (void)
@@ -705,8 +708,8 @@ void terminate (void)
     // set quitting
     quitting = 1;
     
-    // exit event loop
-    BReactor_Quit(&ss, 1);
+    // Preserve nonzero status for runtime errors; signal shutdown sets zero.
+    BReactor_Quit(&ss, reactor_exit_code);
 }
 
 void print_help (const char *name)
@@ -1090,6 +1093,7 @@ void signal_handler (void *unused)
     
     BLog(BLOG_NOTICE, "termination requested");
     
+    reactor_exit_code = 0;
     terminate();
 }
 
