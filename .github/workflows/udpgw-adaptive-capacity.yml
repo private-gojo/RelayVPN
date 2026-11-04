@@ -1,6 +1,9 @@
 name: UDPGW Adaptive Capacity Measurement
 
 on:
+  push:
+    branches:
+      - measure/udpgw-capacity-current
   workflow_dispatch:
     inputs:
       target_mappings:
@@ -46,7 +49,7 @@ jobs:
       - name: Measure adaptive mapping capacity
         shell: bash
         env:
-          TARGET_MAPPINGS: ${{ inputs.target_mappings }}
+          TARGET_MAPPINGS: ${{ inputs.target_mappings || '100000' }}
         run: |
           set -euo pipefail
           ROOT="$RUNNER_TEMP/udpgw-capacity"
