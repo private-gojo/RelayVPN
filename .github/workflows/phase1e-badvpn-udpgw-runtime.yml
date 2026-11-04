@@ -200,7 +200,7 @@ jobs:
             if [[ "$STREAM_UP_COUNT" -ge 2 ]]; then break; fi
             sleep 1
           done
-          grep -q 'UDPGW capacity: requested=100000 streams=2 per_stream=50000' "$ROOT/tun2socks.log"
+          grep -q 'UDPGW capacity: requested=100000 effective=100000 streams=2 per_stream=50000' "$ROOT/tun2socks.log"
           if [[ "$STREAM_UP_COUNT" -lt 2 ]]; then
             echo "Expected two independent UDPGW SOCKS streams, got $STREAM_UP_COUNT" >&2
             cat "$ROOT/tun2socks.log"
