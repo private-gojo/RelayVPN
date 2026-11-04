@@ -1,7 +1,6 @@
 import os
 import unittest
 
-from client import UDPGWClient
 from protocol import (
     FLAG_IPV6,
     UDPGW_MTU,
@@ -25,9 +24,19 @@ class UDPGWMalformedInputTests(unittest.TestCase):
 
     def _send_malformed_then_verify_session(self, malformed):
         self.client.send_raw_payload(malformed)
+        expect_disconnect = (
+            os.environ.get("UDPGW_EXPECT_MALFORMED_CLIENT_DISCONNECT", "0") == "1"
+        )
+        if expect_disconnect:
+            self.assertTrue(
+                self.client.wait_closed(timeout=3.0),
+                "malformed frame should close the client for this candidate",
+            )
+            return
+
         self.assertFalse(self.client.has_data(timeout=0.1))
         with EchoServer() as echo:
-            payload = b"wp2-valid-after-malformed"
+            payload = b"wp7-valid-after-malformed"
             self.client.send_packet(0, 70, echo.address, payload)
             response = self.client.recv_packet()
             self.assertEqual(response["conid"], 70)
@@ -44,13 +53,26 @@ class UDPGWMalformedInputTests(unittest.TestCase):
         self._send_malformed_then_verify_session(bytes((FLAG_IPV6, 0x72, 0x00)))
 
     def test_udp_payload_over_configured_mtu_is_dropped(self):
-        malformed = pack_udpgw(
-            0,
-            0x73,
-            ("127.0.0.1", 9999),
-            b"x" * (UDP_MTU + 1),
-        )
-        self._send_malformed_then_verify_session(malformed)
+        payload = b"x" * (UDP_MTU + 1)
+        expect_drop = os.environ.get("UDPGW_EXPECT_UDP_OVERSIZE_DROP", "1") == "1"
+        if expect_drop:
+            malformed = pack_udpgw(0, 0x73, ("127.0.0.1", 9999), payload)
+            self._send_malformed_then_verify_session(malformed)
+            return
+
+        # The Go candidate forwards oversized uplink datagrams but drops an
+        # equally oversized response, exposing asymmetric MTU enforcement.
+        with EchoServer() as echo:
+            self.client.send_packet(0, 0x73, echo.address, payload)
+            echo.wait_for(payload)
+            self.assertFalse(self.client.has_data(timeout=0.2))
+
+            valid = b"wp7-valid-after-oversized-udp"
+            self.client.send_packet(0, 0x74, echo.address, valid)
+            response = self.client.recv_packet()
+            self.assertEqual(response["conid"], 0x74)
+            self.assertEqual(response["payload"], valid)
+            echo.wait_for(valid)
 
     def test_packetproto_frame_over_decoder_mtu_behavior(self):
         self.assertEqual(UDPGW_MTU, UDP_MTU + 3 + 18)
@@ -67,13 +89,13 @@ class UDPGWMalformedInputTests(unittest.TestCase):
             )
             return
 
-        # Rust currently accepts the u16-sized frame, rejects its UDP payload,
-        # and keeps the TCP client alive. Verify the stream remains usable.
+        # Rust accepts the u16-sized frame, rejects its UDP payload, and keeps
+        # the TCP session open. Verify the stream remains usable.
         with EchoServer() as echo:
-            payload = b"wp7-rust-valid-after-oversized-frame"
-            self.client.send_packet(0, 0x74, echo.address, payload)
+            payload = b"wp7-valid-after-oversized-frame"
+            self.client.send_packet(0, 0x75, echo.address, payload)
             response = self.client.recv_packet()
-            self.assertEqual(response["conid"], 0x74)
+            self.assertEqual(response["conid"], 0x75)
             self.assertEqual(response["payload"], payload)
             echo.wait_for(payload)
 

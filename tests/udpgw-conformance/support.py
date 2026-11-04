@@ -35,8 +35,9 @@ def start_server():
         raise RuntimeError("UDPGW_BIN is not an executable file: " + binary)
 
     _SERVER_HOST = os.environ.get("UDPGW_TEST_HOST", "127.0.0.1")
+    configured_port = int(os.environ.get("UDPGW_TEST_PORT", "0"))
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
-        probe.bind((_SERVER_HOST, 0))
+        probe.bind((_SERVER_HOST, configured_port))
         _SERVER_PORT = probe.getsockname()[1]
 
     configured_log = os.environ.get("UDPGW_LOG_FILE")

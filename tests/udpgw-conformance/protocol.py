@@ -1,4 +1,5 @@
 import ipaddress
+import os
 import socket
 import struct
 
@@ -9,7 +10,7 @@ FLAG_IPV6 = 1 << 3
 
 PACKETPROTO_HEADER = struct.Struct("<H")
 UDPGW_HEADER = struct.Struct("<BH")
-UDP_MTU = 4096
+UDP_MTU = int(os.environ.get("UDPGW_UDP_MTU_BYTES", "4096"))
 UDPGW_MTU = UDP_MTU + UDPGW_HEADER.size + 18
 
 

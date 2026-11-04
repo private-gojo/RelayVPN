@@ -1,0 +1,207 @@
+name: WP7-B - C, Rust, and Go UDPGW differential conformance
+
+on:
+  push:
+    branches:
+      - work/wp7b-go-differential-20261104
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: wp7b-go-differential
+  cancel-in-progress: false
+
+jobs:
+  differential-conformance:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+
+    steps:
+      - name: Checkout RelayVPN candidate branch
+        uses: actions/checkout@v4
+
+      - name: Checkout pinned Rust UDPGW candidate
+        uses: actions/checkout@v4
+        with:
+          repository: Dean6767/RustBadVpnUdpgw
+          ref: bfd488a62618fc9dd026ac221b2f274a90ffe2b8
+          path: external/RustBadVpnUdpgw
+
+      - name: Checkout pinned Go UDPGW candidate
+        uses: actions/checkout@v4
+        with:
+          repository: mukswilly/udpgw
+          ref: 5eecaa61b366d3e7185dc1a8c4b7afe8d6c7ef35
+          path: external/GoUDPGW
+
+      - name: Install C, Python, and networking tools
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y build-essential cmake python3 iproute2
+
+      - name: Install stable Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Install Go version required by candidate module
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: external/GoUDPGW/go.mod
+          cache: false
+
+      - name: Build unchanged C UDPGW
+        run: |
+          set -euo pipefail
+          BUILD_DIR="$RUNNER_TEMP/wp7b-c-build"
+          cmake -S . -B "$BUILD_DIR" \
+            -G "Unix Makefiles" \
+            -DBUILD_NOTHING_BY_DEFAULT=ON \
+            -DBUILD_UDPGW=ON
+          cmake --build "$BUILD_DIR" --parallel 2 --target badvpn-udpgw
+          test -x "$BUILD_DIR/udpgw/badvpn-udpgw"
+
+      - name: Build and validate pinned Rust UDPGW
+        run: |
+          set -euo pipefail
+          MANIFEST="external/RustBadVpnUdpgw/Cargo.toml"
+          cargo fmt --manifest-path "$MANIFEST" --check
+          cargo clippy --manifest-path "$MANIFEST" --all-targets -- -D warnings
+          cargo test --manifest-path "$MANIFEST"
+          cargo build --manifest-path "$MANIFEST" --release
+          test -x external/RustBadVpnUdpgw/target/release/badvpn-udpgw
+
+      - name: Test and build pinned Go UDPGW
+        run: |
+          set -euo pipefail
+          cd external/GoUDPGW
+          go test ./...
+          go build -o "$RUNNER_TEMP/go-udpgw" ./cmd
+          test -x "$RUNNER_TEMP/go-udpgw"
+
+      - name: Prepare deterministic DNS stub and Go runtime config
+        shell: bash
+        run: |
+          set -euo pipefail
+          RESOLV_BACKUP="$RUNNER_TEMP/wp7b-resolv.conf"
+          DNS_LOG="$GITHUB_WORKSPACE/wp7b-dns-stub.log"
+          DNS_PID_FILE="$RUNNER_TEMP/wp7b-dns.pid"
+          GO_CONFIG="$RUNNER_TEMP/wp7b-go.json"
+          GO_WRAPPER="$RUNNER_TEMP/wp7b-go-udpgw"
+
+          sudo cp -L /etc/resolv.conf "$RESOLV_BACKUP"
+          sudo sh -c 'printf "nameserver 127.0.0.1\\noptions timeout:1 attempts:1\\n" > /etc/resolv.conf'
+
+          sudo python3 tests/udpgw-conformance/dns_stub.py > "$DNS_LOG" 2>&1 &
+          DNS_PID=$!
+          echo "$DNS_PID" > "$DNS_PID_FILE"
+
+          for attempt in $(seq 1 30); do
+            if grep -q "listening on 127.0.0.1:53" "$DNS_LOG"; then
+              break
+            fi
+            if ! kill -0 "$DNS_PID" 2>/dev/null; then
+              cat "$DNS_LOG"
+              exit 1
+            fi
+            sleep 0.1
+          done
+          grep -q "listening on 127.0.0.1:53" "$DNS_LOG"
+
+          cat > "$GO_CONFIG" <<'EOF'
+          {
+            "LogLevel": "debug",
+            "LogFilename": "",
+            "SkipPanickingLogWriter": true,
+            "HostID": "relayvpn-wp7b-ci",
+            "UdpgwPort": 7300,
+            "DNSResolverIPAddress": "127.0.0.1"
+          }
+          EOF
+
+          cat > "$GO_WRAPPER" <<'EOF'
+          #!/usr/bin/env bash
+          set -euo pipefail
+          exec "$GO_BIN" -config "$GO_CONFIG" run
+          EOF
+          chmod +x "$GO_WRAPPER"
+
+          echo "GO_CONFIG=$GO_CONFIG" >> "$GITHUB_ENV"
+          echo "GO_WRAPPER=$GO_WRAPPER" >> "$GITHUB_ENV"
+          echo "GO_BIN=$RUNNER_TEMP/go-udpgw" >> "$GITHUB_ENV"
+          echo "WP7B_RESOLV_BACKUP=$RESOLV_BACKUP" >> "$GITHUB_ENV"
+          echo "WP7B_DNS_PID_FILE=$DNS_PID_FILE" >> "$GITHUB_ENV"
+
+      - name: Run WP2 and WP6 vectors against C
+        shell: bash
+        run: |
+          set -euo pipefail
+          UDPGW_BIN="$RUNNER_TEMP/wp7b-c-build/udpgw/badvpn-udpgw" \
+          UDPGW_DNS_TEST=1 \
+          UDPGW_EXPECT_OVERSIZE_FRAME_DISCONNECT=1 \
+          UDPGW_LOG_FILE="$GITHUB_WORKSPACE/wp7b-c-udpgw.log" \
+            python3 -m unittest discover \
+              -s tests/udpgw-conformance \
+              -p 'test_*.py' \
+              -v
+
+      - name: Run WP2 and WP6 vectors against Rust
+        shell: bash
+        run: |
+          set -euo pipefail
+          UDPGW_BIN="$GITHUB_WORKSPACE/external/RustBadVpnUdpgw/target/release/badvpn-udpgw" \
+          UDPGW_EXTRA_ARGS="--udp-idle-timeout 0" \
+          UDPGW_DNS_TEST=1 \
+          UDPGW_EXPECT_OVERSIZE_FRAME_DISCONNECT=0 \
+          UDPGW_LOG_FILE="$GITHUB_WORKSPACE/wp7b-rust-udpgw.log" \
+            python3 -m unittest discover \
+              -s tests/udpgw-conformance \
+              -p 'test_*.py' \
+              -v
+
+      - name: Run WP2 and WP6 vectors against Go
+        shell: bash
+        run: |
+          set -euo pipefail
+          UDPGW_BIN="$GO_WRAPPER" \
+          UDPGW_TEST_PORT=7300 \
+          UDPGW_UDP_MTU_BYTES=32768 \
+          UDPGW_EXPECT_MALFORMED_CLIENT_DISCONNECT=1 \
+          UDPGW_EXPECT_UDP_OVERSIZE_DROP=0 \
+          UDPGW_EXPECT_LRU_EVICTION=0 \
+          UDPGW_EXPECT_FULL_CONE=0 \
+          UDPGW_EXPECT_OVERSIZE_FRAME_DISCONNECT=1 \
+          UDPGW_DNS_TEST=1 \
+          UDPGW_LOG_FILE="$GITHUB_WORKSPACE/wp7b-go-udpgw.log" \
+            python3 -m unittest discover \
+              -s tests/udpgw-conformance \
+              -p 'test_*.py' \
+              -v
+
+      - name: Restore resolver and stop DNS stub
+        if: always()
+        shell: bash
+        run: |
+          set +e
+          if [[ -n "${WP7B_DNS_PID_FILE:-}" && -f "$WP7B_DNS_PID_FILE" ]]; then
+            sudo kill "$(cat "$WP7B_DNS_PID_FILE")" 2>/dev/null
+          fi
+          if [[ -n "${WP7B_RESOLV_BACKUP:-}" && -f "$WP7B_RESOLV_BACKUP" ]]; then
+            sudo cp "$WP7B_RESOLV_BACKUP" /etc/resolv.conf
+          fi
+
+      - name: Upload WP7-B differential logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: relayvpn-wp7b-c-rust-go-differential
+          path: |
+            wp7b-c-udpgw.log
+            wp7b-rust-udpgw.log
+            wp7b-go-udpgw.log
+            wp7b-dns-stub.log
+          if-no-files-found: warn
+          retention-days: 30
