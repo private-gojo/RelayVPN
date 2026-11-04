@@ -99,6 +99,7 @@ def main():
     parser.add_argument("--server-pid", type=int, required=True)
     parser.add_argument("--server-log", required=True)
     parser.add_argument("--timeout", type=int, default=180)
+    parser.add_argument("--sample-interval", type=float, default=2.0)
     parser.add_argument("--output", default="udpgw-capacity-result.json")
     args = parser.parse_args()
 
@@ -106,6 +107,8 @@ def main():
         parser.error("--target must be between 1000 and 100000")
     if args.timeout < 10:
         parser.error("--timeout must be at least 10 seconds")
+    if not 0.25 <= args.sample_interval <= 30:
+        parser.error("--sample-interval must be between 0.25 and 30 seconds")
 
     server_capacity = read_effective_capacity(args.server_log)
     target = min(args.target, server_capacity)
@@ -149,17 +152,26 @@ def main():
                     sock.sendall(chunk)
 
         keepalive_at = time.monotonic() + 5
+        next_progress_at = start + 30
         deadline = start + args.timeout
         observed_fds = baseline_fds
-        while time.monotonic() < deadline:
+        while True:
             observed_fds = fd_count(args.server_pid)
-            if observed_fds - baseline_fds >= target:
+            now = time.monotonic()
+            fd_delta = max(0, observed_fds - baseline_fds)
+            if fd_delta >= target or now >= deadline:
                 break
-            if time.monotonic() >= keepalive_at:
+            if now >= keepalive_at:
                 for sock in streams:
                     sock.sendall(KEEPALIVE_FRAME)
-                keepalive_at = time.monotonic() + 5
-            time.sleep(0.2)
+                keepalive_at = now + 5
+            if now >= next_progress_at:
+                print(
+                    f"progress elapsed={now - start:.0f}s active_mappings={fd_delta}/{target}",
+                    flush=True,
+                )
+                next_progress_at = now + 30
+            time.sleep(min(args.sample_interval, max(0.0, deadline - now)))
 
         elapsed = time.monotonic() - start
         fd_delta = max(0, observed_fds - baseline_fds)
@@ -181,6 +193,7 @@ def main():
             "observed_server_fd_delta": fd_delta,
             "mapping_fd_target_reached": fd_delta >= target,
             "elapsed_seconds": round(elapsed, 3),
+            "fd_sample_interval_seconds": args.sample_interval,
             "baseline_rss_bytes": baseline_process_memory["rss_bytes"],
             "rss_delta_bytes": rss_delta,
             "rss_delta_bytes_per_mapping": round(rss_delta / fd_delta, 2) if rss_delta is not None and fd_delta else None,
