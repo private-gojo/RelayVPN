@@ -130,13 +130,13 @@ async def probe_loop(session, target, direct_sock, state, payload_size, stop_at)
         payload = make_payload("P", token, seq, sent, payload_size)
         state["tunnel_pending"][seq] = sent
         session["writer"].write(make_packet(conid, target, payload))
-        await session["writer"].drain()
 
         direct_seq = seq + (1 << 48)
         direct_sent = time.monotonic_ns()
         direct_payload = make_payload("P", token, direct_seq, direct_sent, payload_size)
         state["direct_pending"][direct_seq] = direct_sent
         await loop.sock_sendto(direct_sock, direct_payload, target)
+        await session["writer"].drain()
         await asyncio.sleep(0.05)
 
 
@@ -332,14 +332,16 @@ def read_final_json(proc):
 
 
 def run_case(args):
-    if args.flows < 1 or args.clients < 1:
-        raise SystemExit("flows and clients must be positive")
+    if args.flows < 1 or args.clients < 1 or args.workers < 1:
+        raise SystemExit("flows, clients, and workers must be positive")
+    if args.duration <= 0 or args.down_rate_pps < 0:
+        raise SystemExit("duration must be positive and down-rate-pps non-negative")
     if args.flows > args.clients * 65536:
         raise SystemExit("legacy conid namespace exceeded: flows must be <= clients * 65536")
     if args.payload_size < META.size:
         raise SystemExit(f"payload-size must be >= {META.size}")
-    if args.udp_mtu < args.payload_size:
-        raise SystemExit("udp-mtu must be >= payload-size")
+    if args.udp_mtu < args.payload_size or args.udp_mtu > 65507:
+        raise SystemExit("udp-mtu must be >= payload-size and <= 65507")
 
     flow_lists = [[] for _ in range(args.clients)]
     for token in range(args.flows):
