@@ -229,6 +229,9 @@ jobs:
 
           echo '--- UDP through BadVPN tun2socks and UDPGW ---'
           sudo ip netns exec cli python3 tests/badvpn-udpgw-client.py
+          grep -q 'UDPGW flow stream=0/2' "$ROOT/tun2socks.log"
+          grep -q 'UDPGW flow stream=1/2' "$ROOT/tun2socks.log"
+          echo 'PASS: UDP packets routed through both UDPGW streams'
 
           echo '--- Direct UDPGW mapping capacity smoke test ---'
           python3 tests/bench/udpgw_capacity.py \
