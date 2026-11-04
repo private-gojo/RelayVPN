@@ -64,7 +64,7 @@ jobs:
               --rates 2000,5000,10000,20000,40000,60000,80000,100000 \
               --duration 3 \
               --payload-bytes 128 \
-              --batch-size 256 \
+              --batch-size 64 \
               --max-connections 4096 \
               --artifact-dir wp5-artifacts \
               --output wp5-artifacts/cpu-profile.json
