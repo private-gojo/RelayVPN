@@ -60,15 +60,42 @@ class EchoServer:
 
 
 def process_metrics(pid):
-    result = {"rss_bytes": None, "fd_count": None, "threads": None}
+    result = {
+        "rss_bytes": None, "peak_rss_bytes": None, "virtual_bytes": None,
+        "data_bytes": None, "fd_count": None, "threads": None,
+        "pss_bytes": None, "anonymous_bytes": None, "private_dirty_bytes": None,
+    }
+    status_fields = {
+        "VmRSS:": "rss_bytes",
+        "VmHWM:": "peak_rss_bytes",
+        "VmSize:": "virtual_bytes",
+        "VmData:": "data_bytes",
+    }
     try:
         with open("/proc/%d/status" % pid, encoding="ascii") as stream:
             for line in stream:
-                if line.startswith("VmRSS:"):
-                    result["rss_bytes"] = int(line.split()[1]) * 1024
-                elif line.startswith("Threads:"):
+                for prefix, key in status_fields.items():
+                    if line.startswith(prefix):
+                        result[key] = int(line.split()[1]) * 1024
+                        break
+                if line.startswith("Threads:"):
                     result["threads"] = int(line.split()[1])
         result["fd_count"] = len(os.listdir("/proc/%d/fd" % pid))
+    except (OSError, ValueError, IndexError):
+        pass
+
+    try:
+        with open("/proc/%d/smaps_rollup" % pid, encoding="ascii") as stream:
+            smaps_fields = {
+                "Pss:": "pss_bytes",
+                "Anonymous:": "anonymous_bytes",
+                "Private_Dirty:": "private_dirty_bytes",
+            }
+            for line in stream:
+                for prefix, key in smaps_fields.items():
+                    if line.startswith(prefix):
+                        result[key] = int(line.split()[1]) * 1024
+                        break
     except (OSError, ValueError, IndexError):
         pass
     return result
