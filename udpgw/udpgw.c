@@ -566,9 +566,15 @@ int configure_capacity (void)
         uint64_t udp_send_buffer = chunk_buffer_allocation((uint64_t)options.udp_mtu);
         uint64_t udp_receive_buffer = (uint64_t)options.udp_mtu;
         uint64_t per_mapping = pp_buffer + udp_send_buffer + udp_receive_buffer +
-                               (uint64_t)sizeof(struct connection) + 65536ULL;
+                               (uint64_t)sizeof(struct connection);
 
-        // Add a 25% safety factor for allocator and per-socket overhead.
+        // Runtime RSS tests measured about 10 KiB per mapping at MTU 1472.
+        if (per_mapping < 10ULL * 1024ULL) {
+            per_mapping = 10ULL * 1024ULL;
+        }
+
+        // Reserve 2 KiB for kernel socket state and add 25% safety headroom.
+        per_mapping += 2ULL * 1024ULL;
         per_mapping = (per_mapping * 5ULL + 3ULL) / 4ULL;
         uint64_t memory_capacity = per_mapping ? memory_budget / per_mapping : 0;
         if (memory_capacity < (uint64_t)effective_max_total_connections) {
