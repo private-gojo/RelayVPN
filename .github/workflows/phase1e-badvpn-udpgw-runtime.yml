@@ -206,6 +206,16 @@ jobs:
           echo '--- UDP through BadVPN tun2socks and UDPGW ---'
           sudo ip netns exec cli python3 tests/badvpn-udpgw-client.py
 
+          echo '--- Direct UDPGW mapping capacity smoke test ---'
+          python3 tests/bench/udpgw_capacity.py \
+            --host 10.200.0.1 \
+            --port 7300 \
+            --target 1000 \
+            --server-pid "$UDPGW_PID" \
+            --server-log "$ROOT/logs/udpgw.log" \
+            --output "$ROOT/udpgw-capacity-result.json"
+          cp "$ROOT/udpgw-capacity-result.json" "$ARTIFACT_DIR/"
+
           echo '--- Shutdown and resource cleanup ---'
           sudo kill -TERM "$TUN_PID"
           sudo kill -TERM "$UDPGW_PID"
