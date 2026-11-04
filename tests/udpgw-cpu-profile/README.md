@@ -24,3 +24,22 @@ This is a loopback microbenchmark, not a carrier-network benchmark. It is intend
 - Mapping levels top out at 1,024; this work package profiles packet-processing cost, not 10k–100k mapping capacity.
 - The 16-bit connection ID and existing wire contract remain unchanged.
 - No multi-instance implementation or production C modification is included.
+
+
+## Initial CI evidence
+
+Run #9 (commit \`9e7d3ff906caf6e779081afe876a5bb3d12d903a\`, GitHub Actions run \`41832095201\`) completed successfully on the Ubuntu CI runner. It measured 64, 256, and 1,024 mappings at eight offered rates from 2k to 100k pps, for three seconds per rate, with 64-packet batches.
+
+| Active mappings | Offered rate | UDPGW active CPU | Echo completion | Client-buffer errors | UDP-buffer errors |
+|---:|---:|---:|---:|---:|---:|
+| 64 | 80k pps | 71.00% | 98.964% | 2,483 | 0 |
+| 64 | 100k pps | 87.99% | 99.486% | 1,512 | 0 |
+| 256 | 100k pps | 89.32% | 100% | 0 | 0 |
+| 1,024 | 80k pps | 82.00% | 100% | 0 | 0 |
+| 1,024 | 100k pps | 97.65% | 99.456% | 1,648 | 0 |
+
+Across all 24 trials, the log parser counted 5,643 \`out of client buffer\` events and zero \`out of UDP buffer\` events. At 1,024 mappings and 100k pps, UDPGW reached 97.65% of one CPU core while the C echo helper used 51.33% and the Python harness used 12.00%. This indicates that the UDPGW process itself is the limiting CPU component at that point; its client-side packet buffer also rejected some replies.
+
+At 1,024 mappings and 80k pps, the same run completed every echo with no buffer errors at 82% UDPGW CPU. Treat 80k pps as a provisional clean CI point, not a production guarantee. A separate 256-packet-batch trial produced substantially more client-buffer errors, so burst shape affects results and should remain part of capacity testing.
+
+This profile measures packets per second, not 10k–100k simultaneous mappings. The mapping count in this test never exceeds 1,024. It does not establish a 100k-mapping capacity figure.
