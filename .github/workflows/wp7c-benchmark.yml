@@ -114,7 +114,7 @@ jobs:
           echo "ECHO_BIN=$RUNNER_TEMP/udpgw-echo" >> "$GITHUB_ENV"
 
       - name: Smoke matrix - C
-        if: github.event_name == 'push' || inputs.profile == 'smoke'
+        if: (github.event_name == 'push' && !contains(github.event.head_commit.message, '[wp7c-ramp]')) || inputs.profile == 'smoke'
         run: |
           set -euo pipefail
           for direction in up down bidi; do
@@ -128,7 +128,7 @@ jobs:
           done
 
       - name: Smoke matrix - Rust
-        if: github.event_name == 'push' || inputs.profile == 'smoke'
+        if: (github.event_name == 'push' && !contains(github.event.head_commit.message, '[wp7c-ramp]')) || inputs.profile == 'smoke'
         run: |
           set -euo pipefail
           for direction in up down bidi; do
@@ -142,7 +142,7 @@ jobs:
           done
 
       - name: Prepare expanded benchmark resource envelope
-        if: inputs.profile == 'full' || inputs.profile == 'ramp'
+        if: inputs.profile == 'full' || inputs.profile == 'ramp' || (github.event_name == 'push' && contains(github.event.head_commit.message, '[wp7c-ramp]'))
         shell: bash
         run: |
           set -euo pipefail
@@ -177,7 +177,7 @@ jobs:
             --output wp7c-benchmark-reports/rust-matrix.json
 
       - name: C active-flow capacity ramp
-        if: inputs.profile == 'ramp'
+        if: inputs.profile == 'ramp' || (github.event_name == 'push' && contains(github.event.head_commit.message, '[wp7c-ramp]'))
         shell: bash
         run: |
           set -euo pipefail
@@ -185,14 +185,14 @@ jobs:
           set +e
           python3 tests/udpgw-bench/ramp.py \
             --engine c --engine-bin "$C_BIN" --echo-bin "$ECHO_BIN" \
-            --clients 64 --duration 2 --workers 4 \
+            --clients 64 --duration 2 --workers 4 --up-rate-pps 10000 \
             --output wp7c-benchmark-reports/c-ramp.json
           STATUS=$?
           set -e
           echo "C ramp exit=$STATUS (a resource-limited stop is captured in the report)"
 
       - name: Rust active-flow capacity ramp
-        if: inputs.profile == 'ramp'
+        if: inputs.profile == 'ramp' || (github.event_name == 'push' && contains(github.event.head_commit.message, '[wp7c-ramp]'))
         shell: bash
         run: |
           set -euo pipefail
@@ -200,7 +200,7 @@ jobs:
           set +e
           python3 tests/udpgw-bench/ramp.py \
             --engine rust --engine-bin "$RUST_BIN" --echo-bin "$ECHO_BIN" \
-            --clients 64 --duration 2 --workers 4 \
+            --clients 64 --duration 2 --workers 4 --up-rate-pps 10000 \
             --output wp7c-benchmark-reports/rust-ramp.json
           STATUS=$?
           set -e

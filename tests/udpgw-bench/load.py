@@ -301,6 +301,28 @@ def proc_snapshot(pid):
         return {"rss_kb": None, "cpu_seconds": None}
 
 
+def environment_snapshot():
+    try:
+        soft, hard = resource.getrlimit(resource.RLIMIT_NOFILE)
+    except Exception:
+        soft, hard = None, None
+    ephemeral = "unknown"
+    try:
+        ephemeral = Path("/proc/sys/net/ipv4/ip_local_port_range").read_text().strip()
+    except OSError:
+        pass
+    return {
+        "nproc": os.cpu_count(),
+        "kernel": os.uname().release,
+        "machine": os.uname().machine,
+        "platform": os.uname().sysname,
+        "rlimit_nofile_soft": soft,
+        "rlimit_nofile_hard": hard,
+        "ephemeral_port_range": ephemeral,
+        "runner_type": os.environ.get("RUNNER_ENVIRONMENT", "local/unknown"),
+    }
+
+
 def percentile(values, pct):
     if not values:
         return None
@@ -442,13 +464,37 @@ def run_case(args):
             process.join(timeout=5)
             if process.is_alive():
                 process.terminate()
+                process.join(timeout=3)
+
         target_proc.terminate()
+        try:
+            target_proc.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            target_proc.kill()
+            target_proc.wait(timeout=3)
+        target_stats = read_final_json(target_proc)
+
         server_proc.terminate()
+        try:
+            server_proc.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            server_proc.kill()
+            server_proc.wait(timeout=3)
+        server_snapshot = proc_snapshot(server_proc.pid)
+        log_file.seek(0)
+        server_log_tail = log_file.read()[-4000:]
+        log_file.close()
+
         return {
             "status": "setup_failed",
             "case": vars(args),
+            "environment": environment_snapshot(),
             "setup": ready,
-            "server": proc_snapshot(server_proc.pid),
+            "target": target_stats,
+            "server": server_snapshot,
+            "server_exit_code": server_proc.returncode,
+            "server_log_tail": server_log_tail,
+            "worker_exit_codes": [process.exitcode for process in workers],
         }
 
     server_after_setup = proc_snapshot(server_proc.pid)
@@ -566,15 +612,7 @@ def run_case(args):
         "echo_target_saturated": target_cpu_delta is not None and target_cpu_delta / args.duration >= 0.80,
         **paired,
     }
-    try:
-        soft, hard = resource.getrlimit(resource.RLIMIT_NOFILE)
-    except Exception:
-        soft, hard = None, None
-    ephemeral = "unknown"
-    try:
-        ephemeral = Path("/proc/sys/net/ipv4/ip_local_port_range").read_text().strip()
-    except OSError:
-        pass
+    environment = environment_snapshot()
 
     valid_status = (
         metrics["active_flows_confirmed"] == args.flows
@@ -599,16 +637,7 @@ def run_case(args):
             "up_rate_pps": args.up_rate_pps,
             "down_rate_pps": args.down_rate_pps,
         },
-        "environment": {
-            "nproc": os.cpu_count(),
-            "kernel": os.uname().release,
-            "machine": os.uname().machine,
-            "platform": os.uname().sysname,
-            "rlimit_nofile_soft": soft,
-            "rlimit_nofile_hard": hard,
-            "ephemeral_port_range": ephemeral,
-            "runner_type": os.environ.get("RUNNER_ENVIRONMENT", "local/unknown"),
-        },
+        "environment": environment,
         "metrics": metrics,
         "echo_target": target_stats,
         "workers": results,

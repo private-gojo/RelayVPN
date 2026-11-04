@@ -32,7 +32,8 @@ python3 tests/udpgw-bench/matrix.py --engine c \
 
 python3 tests/udpgw-bench/ramp.py --engine rust \
   --engine-bin /path/to/badvpn-udpgw --echo-bin /tmp/udpgw-echo \
-  --clients 64 --steps 1000,5000,10000,25000,50000,75000,100000 \
+  --clients 64 --up-rate-pps 10000 \
+  --steps 1000,5000,10000,25000,50000,60000,64000,65000,75000,100000 \
   --output rust-ramp.json
 ```
 
@@ -51,8 +52,9 @@ per-flow receive-buffer budget is comparable. Cases execute serially to avoid cr
   echo-target CPU are reported separately; saturation marks the throughput result invalid.
 - Mapping setup is confirmed by one target acknowledgement per flow. Missing acknowledgements
   make a case partial or failed.
-- Use `ramp.py` for the highest successful active-flow step. A single matrix case reports its
-  confirmed flow count, not a universal capacity limit.
+- Use `ramp.py` for the highest successful active-flow step. It sends a bounded aggregate
+  uplink probe load (10k pps by default) so mapping confirmation is not distorted by a saturated
+  unpaced generator. A single matrix case reports its confirmed flow count, not a universal capacity limit.
 - Record the same runner/kernel, RLIMIT_NOFILE, and ephemeral port range for C/Rust comparisons.
   SSH-hop tests are separate from this direct UDPGW-only ceiling.
 - Initial load generation is IPv4-only. IPv6 remains covered by WP2/WP6 conformance, not this
