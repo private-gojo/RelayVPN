@@ -270,9 +270,18 @@ jobs:
             echo "tun0 still exists after BadVPN exit" >&2
             exit 1
           fi
-          if pgrep -f '(^|/)badvpn-(tun2socks|udpgw)( |$)' >/dev/null; then
-            echo "Orphan BadVPN process remains" >&2
-            pgrep -a -f '(^|/)badvpn-(tun2socks|udpgw)( |$)' || true
+          ORPHAN_PROCESSES=()
+          for proc_exe in /proc/[0-9]*/exe; do
+            exe_target=$(sudo readlink "$proc_exe" 2>/dev/null || true)
+            case "$exe_target" in
+              */badvpn-tun2socks|*/badvpn-udpgw)
+                ORPHAN_PROCESSES+=("$proc_exe -> $exe_target")
+                ;;
+            esac
+          done
+          if [[ "${#ORPHAN_PROCESSES[@]}" -gt 0 ]]; then
+            echo "Orphan BadVPN processes remain:" >&2
+            printf '%s\n' "${ORPHAN_PROCESSES[@]}" >&2
             exit 1
           fi
           echo 'PASS: TCP and UDPGW runtime, TUN cleanup, no orphan BadVPN processes'
