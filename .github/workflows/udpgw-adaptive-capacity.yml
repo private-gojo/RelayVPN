@@ -1,0 +1,116 @@
+name: UDPGW Adaptive Capacity Measurement
+
+on:
+  workflow_dispatch:
+    inputs:
+      target_mappings:
+        description: Requested active UDP mappings; runtime auto-caps to detected resources
+        required: true
+        type: choice
+        default: "100000"
+        options:
+          - "1000"
+          - "5000"
+          - "10000"
+          - "25000"
+          - "50000"
+          - "100000"
+
+permissions:
+  contents: read
+
+jobs:
+  measure:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout RelayVPN
+        uses: actions/checkout@v4
+
+      - name: Install build tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential cmake python3
+
+      - name: Build UDPGW
+        run: |
+          set -euo pipefail
+          cmake -S . -B "$RUNNER_TEMP/relayvpn-udpgw-build" \
+            -G "Unix Makefiles" \
+            -DBUILD_NOTHING_BY_DEFAULT=ON \
+            -DBUILD_UDPGW=ON
+          cmake --build "$RUNNER_TEMP/relayvpn-udpgw-build" --parallel 2
+          test -x "$RUNNER_TEMP/relayvpn-udpgw-build/udpgw/badvpn-udpgw"
+
+      - name: Measure adaptive mapping capacity
+        shell: bash
+        env:
+          TARGET_MAPPINGS: ${{ inputs.target_mappings }}
+        run: |
+          set -euo pipefail
+          ROOT="$RUNNER_TEMP/udpgw-capacity"
+          BIN="$RUNNER_TEMP/relayvpn-udpgw-build/udpgw/badvpn-udpgw"
+          mkdir -p "$ROOT"
+
+          ulimit -n
+          "$BIN" \
+            --listen-addr 127.0.0.1:7300 \
+            --max-clients 16 \
+            --max-connections-for-client 65536 \
+            --max-total-connections 100000 \
+            --fd-limit 262144 \
+            --udp-mtu 1472 \
+            --loglevel warning > "$ROOT/udpgw.log" 2>&1 &
+          UDPGW_PID=$!
+
+          cleanup() {
+            set +e
+            if kill -0 "$UDPGW_PID" 2>/dev/null; then
+              kill -TERM "$UDPGW_PID"
+              wait "$UDPGW_PID"
+            fi
+          }
+          trap cleanup EXIT
+
+          for i in $(seq 1 30); do
+            if grep -q 'effective_mappings=' "$ROOT/udpgw.log"; then break; fi
+            if ! kill -0 "$UDPGW_PID" 2>/dev/null; then
+              cat "$ROOT/udpgw.log"
+              exit 1
+            fi
+            sleep 1
+          done
+          grep -E 'capacity:|entering event loop' "$ROOT/udpgw.log"
+
+          python3 tests/bench/udpgw_capacity.py \
+            --host 127.0.0.1 \
+            --port 7300 \
+            --target "$TARGET_MAPPINGS" \
+            --server-pid "$UDPGW_PID" \
+            --server-log "$ROOT/udpgw.log" \
+            --timeout 300 \
+            --output "$ROOT/result.json"
+
+          kill -TERM "$UDPGW_PID"
+          set +e
+          wait "$UDPGW_PID"
+          UDPGW_STATUS=$?
+          set -e
+          echo "udpgw_exit_status=$UDPGW_STATUS"
+          if [[ "$UDPGW_STATUS" -ne 0 ]]; then
+            echo "UDPGW did not exit cleanly" >&2
+            exit 1
+          fi
+
+          cat "$ROOT/result.json"
+
+      - name: Upload capacity measurement
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: relayvpn-udpgw-capacity-result
+          path: |
+            ${{ runner.temp }}/udpgw-capacity/udpgw.log
+            ${{ runner.temp }}/udpgw-capacity/result.json
+          if-no-files-found: warn
