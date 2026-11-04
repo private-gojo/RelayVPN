@@ -35,10 +35,10 @@ class UDPGWMalformedInputTests(unittest.TestCase):
             echo.wait_for(payload)
 
     def test_short_udpgw_header_is_dropped(self):
-        self._send_malformed_then_verify_session(b"\\x00")
+        self._send_malformed_then_verify_session(b"\x00")
 
     def test_missing_ipv4_address_is_dropped(self):
-        self._send_malformed_then_verify_session(b"\\x00\\x71\\x00")
+        self._send_malformed_then_verify_session(b"\x00\x71\x00")
 
     def test_missing_ipv6_address_is_dropped(self):
         self._send_malformed_then_verify_session(bytes((FLAG_IPV6, 0x72, 0x00)))

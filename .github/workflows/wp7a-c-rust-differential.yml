@@ -67,7 +67,6 @@ jobs:
           set -euo pipefail
           C_BIN="$RUNNER_TEMP/wp7a-c-build/udpgw/badvpn-udpgw"
           RUST_BIN="$GITHUB_WORKSPACE/external/RustBadVpnUdpgw/target/release/badvpn-udpgw"
-          RUST_WRAPPER="$RUNNER_TEMP/wp7a-rust-compat"
           RESOLV_BACKUP="$RUNNER_TEMP/wp7a-resolv.conf"
           DNS_LOG="$GITHUB_WORKSPACE/wp7a-dns-stub.log"
           C_LOG="$GITHUB_WORKSPACE/wp7a-c-udpgw.log"
@@ -101,14 +100,6 @@ jobs:
           done
           grep -q "listening on 127.0.0.1:53" "$DNS_LOG"
 
-          cat > "$RUST_WRAPPER" <<'EOF'
-          #!/usr/bin/env bash
-          set -euo pipefail
-          exec "$RUST_BIN" --udp-idle-timeout 0 "$@"
-          EOF
-          chmod +x "$RUST_WRAPPER"
-          export RUST_BIN
-
           echo "===== C baseline: WP2 + WP6 ====="
           UDPGW_BIN="$C_BIN" \
           UDPGW_DNS_TEST=1 \
@@ -120,7 +111,8 @@ jobs:
               -v
 
           echo "===== Rust candidate: WP2 + WP6 ====="
-          UDPGW_BIN="$RUST_WRAPPER" \
+          UDPGW_BIN="$RUST_BIN" \
+          UDPGW_EXTRA_ARGS="--udp-idle-timeout 0" \
           UDPGW_DNS_TEST=1 \
           UDPGW_EXPECT_OVERSIZE_FRAME_DISCONNECT=0 \
           UDPGW_LOG_FILE="$RUST_LOG" \

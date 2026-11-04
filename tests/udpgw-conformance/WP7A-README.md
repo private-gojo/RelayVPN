@@ -58,9 +58,9 @@ UDPGW_EXPECT_OVERSIZE_FRAME_DISCONNECT=0 \
 python3 -m unittest discover -s tests/udpgw-conformance -p 'test_*.py' -v
 ```
 
-The CI job uses a small wrapper to set Rust's idle timeout to zero; the local
-example above is illustrative and requires the equivalent argument wrapper
-because the shared test harness does not currently parse extra CLI arguments.
+The test harness accepts optional extra CLI arguments through
+`UDPGW_EXTRA_ARGS`; this is used to set the Rust idle timeout to zero. The C
+run leaves this variable unset.
 
 ## Guardrails
 

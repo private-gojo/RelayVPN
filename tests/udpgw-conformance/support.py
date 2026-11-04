@@ -1,6 +1,7 @@
 import atexit
 import os
 import socket
+import shlex
 import subprocess
 import tempfile
 import threading
@@ -56,6 +57,7 @@ def start_server():
         "--client-socket-sndbuf", "65536",
         "--loglevel", "debug",
     ]
+    command.extend(shlex.split(os.environ.get("UDPGW_EXTRA_ARGS", "")))
     _SERVER_PROCESS = subprocess.Popen(
         command,
         stdout=_SERVER_LOG,

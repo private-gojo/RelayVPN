@@ -44,7 +44,7 @@ class LiveWireGoldenVectorTests(unittest.TestCase):
         echo.wait_for(payload)
 
     def test_live_ipv4_response_matches_exact_wire_vector(self):
-        payload = b"\\x00WP6\\xFF\\x10ipv4-golden"
+        payload = b"\x00WP6\xFF\x10ipv4-golden"
         with EchoServer(socket.AF_INET, "127.0.0.1") as echo:
             self.assert_live_response_matches_wire(
                 echo, 0x1234, payload, ipv6=False
@@ -56,7 +56,7 @@ class LiveWireGoldenVectorTests(unittest.TestCase):
         except OSError as error:
             self.skipTest("IPv6 loopback is unavailable: %s" % error)
         with echo:
-            payload = b"\\x00WP6\\xFF\\x20ipv6-golden"
+            payload = b"\x00WP6\xFF\x20ipv6-golden"
             self.assert_live_response_matches_wire(
                 echo, 0xBEEF, payload, ipv6=True
             )
