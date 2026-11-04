@@ -31,6 +31,12 @@
 #include <stdarg.h>
 #include <stdlib.h>
 #include <limits.h>
+#include <errno.h>
+
+#ifdef BADVPN_LINUX
+#include <dirent.h>
+#include <sys/resource.h>
+#endif
 
 #include <protocol/udpgw_proto.h>
 #include <misc/debug.h>
@@ -111,6 +117,7 @@ struct connection {
             PacketPassInterface udp_recv_if;
             BAVLNode connections_tree_node;
             LinkedList1Node connections_list_node;
+            LinkedList1Node global_connections_list_node;
         };
         struct {
             LinkedList1Node closing_connections_list_node;
@@ -134,6 +141,8 @@ struct {
     int udp_mtu;
     int max_clients;
     int max_connections_for_client;
+    int max_total_connections;
+    int fd_limit;
     int client_socket_sndbuf;
     int local_udp_num_ports;
     char *local_udp_addr;
@@ -171,10 +180,18 @@ int num_listeners;
 LinkedList1 clients_list;
 int num_clients;
 
+// Active mappings across all UDPGW TCP streams.
+LinkedList1 active_connections_list;
+int num_total_connections;
+int effective_max_total_connections;
+
 static void print_help (const char *name);
 static void print_version (void);
 static int parse_arguments (int argc, char *argv[]);
 static int process_arguments (void);
+static int parse_integer_argument (const char *value, int min_value, int max_value, int *out);
+static int configure_capacity (void);
+static int count_open_fds (void);
 static void signal_handler (void *unused);
 static void listener_handler (BListener *listener);
 static void client_free (struct client *client);
@@ -205,6 +222,8 @@ static void maybe_update_dns (void);
 
 int main (int argc, char **argv)
 {
+    int exit_code = 1;
+
     if (argc <= 0) {
         return 1;
     }
@@ -270,6 +289,12 @@ int main (int argc, char **argv)
         BLog(BLOG_ERROR, "Failed to process arguments");
         goto fail1;
     }
+
+    // derive the safe mapping ceiling from the effective process FD budget.
+    if (!configure_capacity()) {
+        BLog(BLOG_ERROR, "Unable to establish a safe UDPGW capacity");
+        goto fail1;
+    }
     
     // compute MTUs
     udpgw_mtu = udpgw_compute_mtu(options.udp_mtu);
@@ -308,13 +333,15 @@ int main (int argc, char **argv)
         num_listeners++;
     }
     
-    // init clients list
+    // init client and global active mapping lists
     LinkedList1_Init(&clients_list);
     num_clients = 0;
+    LinkedList1_Init(&active_connections_list);
+    num_total_connections = 0;
     
     // enter event loop
     BLog(BLOG_NOTICE, "entering event loop");
-    BReactor_Exec(&ss);
+    exit_code = BReactor_Exec(&ss);
     
     // free clients
     while (!LinkedList1_IsEmpty(&clients_list)) {
@@ -340,6 +367,122 @@ fail0:
     // finish debug objects
     DebugObjectGlobal_Finish();
     
+    return exit_code;
+}
+
+int count_open_fds (void)
+{
+#ifdef BADVPN_LINUX
+    DIR *dir = opendir("/proc/self/fd");
+    if (!dir) {
+        return -1;
+    }
+
+    int count = 0;
+    struct dirent *entry;
+    while ((entry = readdir(dir)) != NULL) {
+        char *end = NULL;
+        errno = 0;
+        (void)strtol(entry->d_name, &end, 10);
+        if (!errno && end != entry->d_name && *end == '\\0') {
+            count++;
+        }
+    }
+    closedir(dir);
+    return count;
+#else
+    return -1;
+#endif
+}
+
+int configure_capacity (void)
+{
+    effective_max_total_connections = options.max_total_connections;
+
+#ifdef BADVPN_LINUX
+    struct rlimit limits;
+    if (getrlimit(RLIMIT_NOFILE, &limits) != 0) {
+        BLog(BLOG_WARNING, "getrlimit(RLIMIT_NOFILE) failed: %s", strerror(errno));
+        return 1;
+    }
+
+    rlim_t desired = (rlim_t)options.fd_limit;
+    if (limits.rlim_max != RLIM_INFINITY && desired > limits.rlim_max) {
+        desired = limits.rlim_max;
+    }
+    if (limits.rlim_cur < desired) {
+        struct rlimit requested = limits;
+        requested.rlim_cur = desired;
+        if (setrlimit(RLIMIT_NOFILE, &requested) != 0) {
+            BLog(BLOG_WARNING, "unable to raise soft FD limit to %lu: %s",
+                 (unsigned long)desired, strerror(errno));
+        }
+        if (getrlimit(RLIMIT_NOFILE, &limits) != 0) {
+            BLog(BLOG_WARNING, "getrlimit refresh failed: %s", strerror(errno));
+            return 1;
+        }
+    }
+
+    rlim_t effective_fd_limit = limits.rlim_cur;
+    if (effective_fd_limit == RLIM_INFINITY || effective_fd_limit > (rlim_t)options.fd_limit) {
+        effective_fd_limit = (rlim_t)options.fd_limit;
+    }
+
+    int open_fds = count_open_fds();
+    if (open_fds < 0) {
+        open_fds = 64;
+        BLog(BLOG_WARNING, "cannot inspect /proc/self/fd; using conservative FD baseline");
+    }
+
+    int fd_reserve = options.max_clients + 64;
+    if (fd_reserve < 256) {
+        fd_reserve = 256;
+    }
+
+    rlim_t used_and_reserved = (rlim_t)open_fds + (rlim_t)fd_reserve;
+    int fd_capacity = 0;
+    if (effective_fd_limit > used_and_reserved) {
+        rlim_t available = effective_fd_limit - used_and_reserved;
+        fd_capacity = available > (rlim_t)INT_MAX ? INT_MAX : (int)available;
+    }
+
+    if (effective_max_total_connections > fd_capacity) {
+        effective_max_total_connections = fd_capacity;
+    }
+
+    BLog(BLOG_NOTICE,
+         "capacity: fd_limit=%lu open_fds=%d reserve=%d requested_mappings=%d effective_mappings=%d",
+         (unsigned long)effective_fd_limit, open_fds, fd_reserve,
+         options.max_total_connections, effective_max_total_connections);
+#else
+    BLog(BLOG_NOTICE,
+         "capacity: platform FD auto-detection unavailable; configured mapping ceiling=%d",
+         effective_max_total_connections);
+#endif
+
+    if (effective_max_total_connections < 1) {
+        BLog(BLOG_ERROR, "effective mapping capacity is zero; increase --fd-limit or reduce reserved clients");
+        return 0;
+    }
+
+    return 1;
+}
+
+int parse_integer_argument (const char *value, int min_value, int max_value, int *out)
+{
+    if (!value || !*value) {
+        return 0;
+    }
+
+    errno = 0;
+    char *end = NULL;
+    long parsed = strtol(value, &end, 10);
+    if (errno == ERANGE || end == value || *end != '\\0' ||
+        parsed < min_value || parsed > max_value) {
+        return 0;
+    }
+
+    *out = (int)parsed;
     return 1;
 }
 
@@ -363,6 +506,8 @@ void print_help (const char *name)
         "        [--udp-mtu <bytes>]\n"
         "        [--max-clients <number>]\n"
         "        [--max-connections-for-client <number>]\n"
+        "        [--max-total-connections <number>]\n"
+        "        [--fd-limit <8192-262144>]\n"
         "        [--client-socket-sndbuf <bytes / 0>]\n"
         "        [--local-udp-addrs <addr> <num_ports>]\n"
         "        [--local-udp-ip6-addrs <addr> <num_ports>]\n"
@@ -398,6 +543,8 @@ int parse_arguments (int argc, char *argv[])
     options.udp_mtu = DEFAULT_UDP_MTU;
     options.max_clients = DEFAULT_MAX_CLIENTS;
     options.max_connections_for_client = DEFAULT_MAX_CONNECTIONS_FOR_CLIENT;
+    options.max_total_connections = 100000;
+    options.fd_limit = 262144;
     options.client_socket_sndbuf = CLIENT_DEFAULT_SOCKET_SEND_BUFFER;
     options.local_udp_num_ports = -1;
     options.local_udp_ip6_num_ports = -1;
@@ -497,7 +644,7 @@ int parse_arguments (int argc, char *argv[])
                 fprintf(stderr, "%s: requires an argument\n", arg);
                 return 0;
             }
-            if ((options.udp_mtu = atoi(argv[i + 1])) < 0) {
+            if (!parse_integer_argument(argv[i + 1], 0, 65507, &options.udp_mtu)) {
                 fprintf(stderr, "%s: wrong argument\n", arg);
                 return 0;
             }
@@ -508,7 +655,7 @@ int parse_arguments (int argc, char *argv[])
                 fprintf(stderr, "%s: requires an argument\n", arg);
                 return 0;
             }
-            if ((options.max_clients = atoi(argv[i + 1])) <= 0) {
+            if (!parse_integer_argument(argv[i + 1], 1, 100000, &options.max_clients)) {
                 fprintf(stderr, "%s: wrong argument\n", arg);
                 return 0;
             }
@@ -519,8 +666,30 @@ int parse_arguments (int argc, char *argv[])
                 fprintf(stderr, "%s: requires an argument\n", arg);
                 return 0;
             }
-            if ((options.max_connections_for_client = atoi(argv[i + 1])) <= 0) {
+            if (!parse_integer_argument(argv[i + 1], 1, 65536, &options.max_connections_for_client)) {
                 fprintf(stderr, "%s: wrong argument\n", arg);
+                return 0;
+            }
+            i++;
+        }
+        else if (!strcmp(arg, "--max-total-connections")) {
+            if (1 >= argc - i) {
+                fprintf(stderr, "%s: requires an argument\\n", arg);
+                return 0;
+            }
+            if (!parse_integer_argument(argv[i + 1], 1, 100000, &options.max_total_connections)) {
+                fprintf(stderr, "%s: expected a value from 1 to 100000\\n", arg);
+                return 0;
+            }
+            i++;
+        }
+        else if (!strcmp(arg, "--fd-limit")) {
+            if (1 >= argc - i) {
+                fprintf(stderr, "%s: requires an argument\\n", arg);
+                return 0;
+            }
+            if (!parse_integer_argument(argv[i + 1], 8192, 262144, &options.fd_limit)) {
+                fprintf(stderr, "%s: expected a value from 8192 to 262144\\n", arg);
                 return 0;
             }
             i++;
@@ -530,7 +699,7 @@ int parse_arguments (int argc, char *argv[])
                 fprintf(stderr, "%s: requires an argument\n", arg);
                 return 0;
             }
-            if ((options.client_socket_sndbuf = atoi(argv[i + 1])) < 0) {
+            if (!parse_integer_argument(argv[i + 1], 0, INT_MAX, &options.client_socket_sndbuf)) {
                 fprintf(stderr, "%s: wrong argument\n", arg);
                 return 0;
             }
@@ -542,7 +711,7 @@ int parse_arguments (int argc, char *argv[])
                 return 0;
             }
             options.local_udp_addr = argv[i + 1];
-            if ((options.local_udp_num_ports = atoi(argv[i + 2])) < 0) {
+            if (!parse_integer_argument(argv[i + 2], 0, 65536, &options.local_udp_num_ports)) {
                 fprintf(stderr, "%s: wrong argument\n", arg);
                 return 0;
             }
@@ -554,7 +723,7 @@ int parse_arguments (int argc, char *argv[])
                 return 0;
             }
             options.local_udp_ip6_addr = argv[i + 1];
-            if ((options.local_udp_ip6_num_ports = atoi(argv[i + 2])) < 0) {
+            if (!parse_integer_argument(argv[i + 2], 0, 65536, &options.local_udp_ip6_num_ports)) {
                 fprintf(stderr, "%s: wrong argument\n", arg);
                 return 0;
             }
@@ -571,6 +740,11 @@ int parse_arguments (int argc, char *argv[])
     
     if (options.help || options.version) {
         return 1;
+    }
+
+    if (options.num_listen_addrs == 0) {
+        fprintf(stderr, "at least one --listen-addr is required\\n");
+        return 0;
     }
     
     return 1;
@@ -620,7 +794,7 @@ void signal_handler (void *unused)
     BLog(BLOG_NOTICE, "termination requested");
     
     // exit event loop
-    BReactor_Quit(&ss, 1);
+    BReactor_Quit(&ss, 0);
 }
 
 void listener_handler (BListener *listener)
@@ -876,10 +1050,18 @@ void client_recv_if_handler_send (struct client *client, uint8_t *data, int data
     
     // if connection doesn't exists, create it
     if (!con) {
-        // check number of connections
-        if (client->num_connections == options.max_connections_for_client) {
-            // close least recently used connection
+        // Enforce the per-stream mapping ceiling first.
+        if (client->num_connections >= options.max_connections_for_client) {
             con = UPPER_OBJECT(LinkedList1_GetFirst(&client->connections_list), struct connection, connections_list_node);
+            connection_close(con);
+        } else if (num_total_connections >= effective_max_total_connections) {
+            // Reclaim the globally least-recently-used mapping before admitting a new one.
+            if (LinkedList1_IsEmpty(&active_connections_list)) {
+                client_log(client, BLOG_WARNING, "global UDP mapping limit reached");
+                return;
+            }
+            con = UPPER_OBJECT(LinkedList1_GetFirst(&active_connections_list), struct connection, global_connections_list_node);
+            connection_log(con, BLOG_INFO, "evicted by global mapping limit");
             connection_close(con);
         }
         
@@ -986,6 +1168,7 @@ uint8_t * build_port_usage_array_and_find_least_used_connection (BAddr remote_ad
 void connection_init (struct client *client, uint16_t conid, BAddr addr, BAddr orig_addr, const uint8_t *data, int data_len)
 {
     ASSERT(client->num_connections < options.max_connections_for_client)
+    ASSERT(num_total_connections < effective_max_total_connections)
     ASSERT(!find_connection(client, conid))
     BAddr_Assert(&addr);
     ASSERT(addr.type == BADDR_TYPE_IPV4 || addr.type == BADDR_TYPE_IPV6)
@@ -1134,11 +1317,13 @@ void connection_init (struct client *client, uint16_t conid, BAddr addr, BAddr o
     // insert to client's connections tree
     ASSERT_EXECUTE(BAVL_Insert(&client->connections_tree, &con->connections_tree_node, NULL))
     
-    // insert to client's connections list
+    // insert to per-stream and process-wide LRU lists
     LinkedList1_Append(&client->connections_list, &con->connections_list_node);
-    
-    // increment number of connections
+    LinkedList1_Append(&active_connections_list, &con->global_connections_list_node);
+
+    // increment active mapping counters
     client->num_connections++;
+    num_total_connections++;
     
     connection_log(con, BLOG_DEBUG, "initialized");
     
@@ -1171,11 +1356,14 @@ void connection_free (struct connection *con)
         // remove from client's closing connections list
         LinkedList1_Remove(&client->closing_connections_list, &con->closing_connections_list_node);
     } else {
-        // decrement number of connections
+        // release the active per-stream and process-wide mapping slots
         client->num_connections--;
+        ASSERT(num_total_connections > 0)
+        num_total_connections--;
         
-        // remove from client's connections list
+        // remove from per-stream and process-wide LRU lists
         LinkedList1_Remove(&client->connections_list, &con->connections_list_node);
+        LinkedList1_Remove(&active_connections_list, &con->global_connections_list_node);
         
         // remove from client's connections tree
         BAVL_Remove(&client->connections_tree, &con->connections_tree_node);
@@ -1318,6 +1506,8 @@ int connection_send_to_udp (struct connection *con, const uint8_t *data, int dat
     // move connection to front
     LinkedList1_Remove(&client->connections_list, &con->connections_list_node);
     LinkedList1_Append(&client->connections_list, &con->connections_list_node);
+    LinkedList1_Remove(&active_connections_list, &con->global_connections_list_node);
+    LinkedList1_Append(&active_connections_list, &con->global_connections_list_node);
     
     // get buffer location
     uint8_t *out;
@@ -1348,11 +1538,14 @@ void connection_close (struct connection *con)
     
     connection_log(con, BLOG_DEBUG, "closing later");
     
-    // decrement number of connections
+    // release the active per-stream and process-wide mapping slots
     client->num_connections--;
+    ASSERT(num_total_connections > 0)
+    num_total_connections--;
     
-    // remove from client's connections list
+    // remove from per-stream and process-wide LRU lists
     LinkedList1_Remove(&client->connections_list, &con->connections_list_node);
+    LinkedList1_Remove(&active_connections_list, &con->global_connections_list_node);
     
     // remove from client's connections tree
     BAVL_Remove(&client->connections_tree, &con->connections_tree_node);
@@ -1409,6 +1602,8 @@ void connection_udp_recv_if_handler_send (struct connection *con, uint8_t *data,
     // move connection to front
     LinkedList1_Remove(&client->connections_list, &con->connections_list_node);
     LinkedList1_Append(&client->connections_list, &con->connections_list_node);
+    LinkedList1_Remove(&active_connections_list, &con->global_connections_list_node);
+    LinkedList1_Append(&active_connections_list, &con->global_connections_list_node);
     
     // accept packet
     PacketPassInterface_Done(&con->udp_recv_if);
