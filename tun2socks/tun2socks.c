@@ -268,27 +268,46 @@ static void free_udpgw_clients (void);
 static int configure_udpgw_client_capacity (int requested, int udp_payload_mtu, int *effective,
                                             uint64_t *memory_budget, uint64_t *bytes_per_mapping);
 
+static uint32_t udpgw_hash_bytes (uint32_t hash, const uint8_t *data, size_t length)
+{
+    for (size_t i = 0; i < length; i++) {
+        hash ^= data[i];
+        hash *= 16777619u;
+    }
+    return hash;
+}
+
+static uint32_t udpgw_hash_addr (uint32_t hash, const BAddr *addr)
+{
+    uint8_t type = (uint8_t)addr->type;
+    hash = udpgw_hash_bytes(hash, &type, sizeof(type));
+
+    switch (addr->type) {
+        case BADDR_TYPE_IPV4:
+            hash = udpgw_hash_bytes(hash, (const uint8_t *)&addr->ipv4.ip, sizeof(addr->ipv4.ip));
+            hash = udpgw_hash_bytes(hash, (const uint8_t *)&addr->ipv4.port, sizeof(addr->ipv4.port));
+            break;
+        case BADDR_TYPE_IPV6:
+            hash = udpgw_hash_bytes(hash, addr->ipv6.ip, sizeof(addr->ipv6.ip));
+            hash = udpgw_hash_bytes(hash, (const uint8_t *)&addr->ipv6.port, sizeof(addr->ipv6.port));
+            break;
+        default:
+            ASSERT(0);
+            break;
+    }
+
+    type = 0xffu;
+    return udpgw_hash_bytes(hash, &type, sizeof(type));
+}
+
 unsigned int udpgw_stream_index (BAddr local_addr, BAddr remote_addr)
 {
     ASSERT(num_udpgw_clients > 0)
 
-    char local_text[BADDR_MAX_PRINT_LEN];
-    char remote_text[BADDR_MAX_PRINT_LEN];
-    BAddr_Print(&local_addr, local_text);
-    BAddr_Print(&remote_addr, remote_text);
-
-    // FNV-1a keeps each UDP flow on the same stream without hashing struct padding.
+    // Hash only address fields; avoid formatting strings and struct padding on each UDP packet.
     uint32_t hash = 2166136261u;
-    const char *parts[2] = {local_text, remote_text};
-    for (int part = 0; part < 2; part++) {
-        const unsigned char *p = (const unsigned char *)parts[part];
-        while (*p) {
-            hash ^= *p++;
-            hash *= 16777619u;
-        }
-        hash ^= 0xffu;
-        hash *= 16777619u;
-    }
+    hash = udpgw_hash_addr(hash, &local_addr);
+    hash = udpgw_hash_addr(hash, &remote_addr);
 
     return hash % (unsigned int)num_udpgw_clients;
 }
