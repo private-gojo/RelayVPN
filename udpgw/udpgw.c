@@ -590,6 +590,8 @@ int configure_capacity (void)
          "capacity: fd_limit=%lu open_fds=%d reserve=%d requested_mappings=%d fd_mappings=%d effective_mappings=%d",
          (unsigned long)effective_fd_limit, open_fds, fd_reserve,
          options.max_total_connections, fd_capacity, effective_max_total_connections);
+    fflush(stdout);
+    fflush(stderr);
 #else
     BLog(BLOG_NOTICE,
          "capacity: platform FD auto-detection unavailable; configured mapping ceiling=%d",
