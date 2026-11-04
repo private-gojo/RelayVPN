@@ -229,9 +229,6 @@ jobs:
 
           echo '--- UDP through BadVPN tun2socks and UDPGW ---'
           sudo ip netns exec cli python3 tests/badvpn-udpgw-client.py
-          grep -q 'UDPGW flow stream=0/2' "$ROOT/tun2socks.log"
-          grep -q 'UDPGW flow stream=1/2' "$ROOT/tun2socks.log"
-          echo 'PASS: UDP packets routed through both UDPGW streams'
 
           echo '--- Shutdown and resource cleanup ---'
           set +e
@@ -244,6 +241,13 @@ jobs:
           wait "$UDPGW_PID"
           UDPGW_STATUS=$?
           set -e
+          if ! grep -q 'UDPGW flow stream=0/2' "$ROOT/tun2socks.log" ||
+             ! grep -q 'UDPGW flow stream=1/2' "$ROOT/tun2socks.log"; then
+            echo "UDP packets did not produce debug evidence for both UDPGW streams" >&2
+            tail -n 120 "$ROOT/tun2socks.log" >&2
+            exit 1
+          fi
+          echo 'PASS: UDP packets routed through both UDPGW streams'
           echo "tun2socks_kill_status=$TUN_KILL_STATUS"
           echo "udpgw_kill_status=$UDPGW_KILL_STATUS"
           echo "tun2socks_exit_status=$TUN_STATUS"
