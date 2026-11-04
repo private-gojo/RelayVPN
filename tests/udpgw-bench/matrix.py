@@ -77,10 +77,14 @@ def main():
                     results.append({"status": "summary", "engine": a.engine, "case": case,
                                     "repeats": a.repeats, "metrics": summarize(records)})
                     cases += 1
+    invalid_measurements = [
+        x for x in results
+        if x.get("status") == "ok" and x.get("valid_throughput_measurement") is False
+    ]
     report = {"engine": a.engine, "matrix_cases": cases, "repeats_per_case": a.repeats,
-              "results": results}
+              "invalid_throughput_runs": len(invalid_measurements), "results": results}
     Path(a.output).write_text(json.dumps(report, indent=2, sort_keys=True) + "\n")
-    failed = [x for x in results if x.get("status") not in ("ok", "summary")]
+    failed = [x for x in results if x.get("status") not in ("ok", "summary") or x.get("valid_throughput_measurement") is False]
     print(json.dumps({"engine": a.engine, "cases": cases,
                       "runs": sum("repeat" in x for x in results),
                       "failed_runs": len(failed), "report": a.output}, indent=2))

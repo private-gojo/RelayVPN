@@ -106,8 +106,7 @@ async def produce_data(session, state, target, payload_size, stop_at):
             payload = make_payload("D", token, seq, sent, payload_size)
             writer.write(make_packet(conid, target, payload))
             state["up_sent"] += 1
-            if seq % 1000 == 0:
-                    await writer.drain()
+        await writer.drain()
 
 
 async def keepalive_loop(session, stop_at):
@@ -479,9 +478,11 @@ def run_case(args):
         "active_flows_confirmed": int(target_stats.get("active_flows", 0)),
         "max_flows_before_first_error": int(target_stats.get("active_flows", 0)),
         "up_sent_frames": sum(int(item.get("up_sent", 0)) for item in valid_results),
+        "up_forwarding_gap_estimate": max(0, sum(int(item.get("up_sent", 0)) for item in valid_results) - up_packets),
         "up_packets": up_packets,
         "down_packets": down_packets,
         "down_target_packets": int(target_stats.get("down_tx", 0)),
+        "down_delivery_gap_estimate": max(0, int(target_stats.get("down_tx", 0)) - down_packets),
         "down_target_send_errors": int(target_stats.get("send_errors", 0)),
         "up_pps": round(up_packets / args.duration, 2),
         "down_pps": round(down_packets / args.duration, 2),
@@ -505,6 +506,13 @@ def run_case(args):
             None if target_cpu_delta is None
             else round(target_cpu_delta / args.duration / max(1, os.cpu_count() or 1) * 100, 2)
         ),
+        "echo_target_single_core_util_percent": (
+            None if target_cpu_delta is None
+            else round(target_cpu_delta / args.duration * 100, 2)
+        ),
+        "generator_core_utilization": round(generator_cpu / args.duration, 3),
+        "generator_saturated": generator_cpu / args.duration >= 0.80 * max(1, worker_count),
+        "echo_target_saturated": target_cpu_delta is not None and target_cpu_delta / args.duration >= 0.80,
         **paired,
     }
     try:
@@ -517,8 +525,16 @@ def run_case(args):
     except OSError:
         pass
 
+    valid_status = (
+        metrics["active_flows_confirmed"] == args.flows
+        and metrics["down_target_send_errors"] == 0
+        and paired["probe_samples_tunnel"] > 0
+        and paired["probe_samples_direct"] > 0
+        and not any("error" in x or x.get("reader_closed") for x in results)
+    )
     return {
-        "status": "ok" if metrics["active_flows_confirmed"] == args.flows and metrics["down_target_send_errors"] == 0 and not any("error" in x or x.get("reader_closed") for x in results) else "partial",
+        "status": "ok" if valid_status else "partial",
+        "valid_throughput_measurement": not metrics["generator_saturated"] and not metrics["echo_target_saturated"],
         "case": {
             "engine": args.engine,
             "engine_bin": args.engine_bin,

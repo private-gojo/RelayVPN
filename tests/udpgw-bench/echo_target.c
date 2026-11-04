@@ -182,7 +182,9 @@ int main(int argc, char **argv) {
                         out_msg[out_count].msg_hdr.msg_name = &from[i];
                         out_msg[out_count].msg_hdr.msg_namelen = in_msg[i].msg_hdr.msg_namelen;
                         out_count++;
-                    } else if (kind == 'G') {\n                        down_started = 1;\n                    } else if (kind == 'P') {
+                    } else if (kind == 'G') {
+                        down_started = 1;
+                    } else if (kind == 'P') {
                         probe_count++;
                         uint8_t *out = out_storage + (size_t)out_count * payload_size;
                         memcpy(out, pkt, len);
