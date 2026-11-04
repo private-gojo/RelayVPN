@@ -31,6 +31,7 @@
 #include <stddef.h>
 #include <string.h>
 #include <limits.h>
+#include <errno.h>
 
 #include <misc/version.h>
 #include <misc/loggers_string.h>
@@ -732,10 +733,15 @@ int parse_arguments (int argc, char *argv[])
                 fprintf(stderr, "%s: requires an argument\n", arg);
                 return 0;
             }
-            if ((options.udpgw_max_connections = atoi(argv[i + 1])) <= 0) {
-                fprintf(stderr, "%s: wrong argument\n", arg);
+            errno = 0;
+            char *end = NULL;
+            long requested = strtol(argv[i + 1], &end, 10);
+            if (errno == ERANGE || end == argv[i + 1] || *end != '\0' ||
+                requested < 1000 || requested > 100000) {
+                fprintf(stderr, "%s: expected a value from 1000 to 100000\n", arg);
                 return 0;
             }
+            options.udpgw_max_connections = (int)requested;
             i++;
         }
         else if (!strcmp(arg, "--udpgw-connection-buffer-size")) {
