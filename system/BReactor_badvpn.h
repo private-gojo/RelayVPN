@@ -198,7 +198,7 @@ typedef struct BFileDescriptor_t {
     int waitEvents;
     
     #ifdef BADVPN_USE_EPOLL
-    struct BFileDescriptor_t **epoll_returned_ptr;
+    struct epoll_event *epoll_returned_event;
     #endif
     
     #ifdef BADVPN_USE_KEVENT
