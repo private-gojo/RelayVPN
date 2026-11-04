@@ -56,6 +56,8 @@ per-flow receive-buffer budget is comparable. Cases execute serially to avoid cr
   uplink probe load (10k pps by default) so mapping confirmation is not distorted by a saturated
   unpaced generator. A single matrix case reports its confirmed flow count, not a universal capacity limit.
 - Record the same runner/kernel, RLIMIT_NOFILE, and ephemeral port range for C/Rust comparisons.
+  The ramp uses a 90-second setup acknowledgement timeout by default; override
+  `--setup-timeout` so slow flow registration is not mistaken for a hard capacity ceiling.
   SSH-hop tests are separate from this direct UDPGW-only ceiling.
 - Initial load generation is IPv4-only. IPv6 remains covered by WP2/WP6 conformance, not this
   first throughput harness.
