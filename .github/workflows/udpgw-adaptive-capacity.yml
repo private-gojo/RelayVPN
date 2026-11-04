@@ -1,9 +1,6 @@
 name: UDPGW Adaptive Capacity Measurement
 
 on:
-  push:
-    branches:
-      - measure/udpgw-capacity-current
   workflow_dispatch:
     inputs:
       target_mappings:
