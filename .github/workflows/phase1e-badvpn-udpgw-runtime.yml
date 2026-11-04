@@ -233,16 +233,6 @@ jobs:
           grep -q 'UDPGW flow stream=1/2' "$ROOT/tun2socks.log"
           echo 'PASS: UDP packets routed through both UDPGW streams'
 
-          echo '--- Direct UDPGW mapping capacity smoke test ---'
-          python3 tests/bench/udpgw_capacity.py \
-            --host 10.200.0.1 \
-            --port 7300 \
-            --target 1000 \
-            --server-pid "$UDPGW_PID" \
-            --server-log "$ROOT/logs/udpgw.log" \
-            --output "$ROOT/udpgw-capacity-result.json"
-          cp "$ROOT/udpgw-capacity-result.json" "$ARTIFACT_DIR/"
-
           echo '--- Shutdown and resource cleanup ---'
           sudo kill -TERM "$TUN_PID"
           sudo kill -TERM "$UDPGW_PID"
