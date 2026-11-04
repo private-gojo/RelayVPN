@@ -1413,6 +1413,7 @@ int process_device_udp_packet (uint8_t *data, int data_len)
     // submit packet to udpgw or SOCKS UDP
     if (udp_mode == UdpModeUdpgw) {
         unsigned int stream = udpgw_stream_index(local_addr, remote_addr);
+        BLog(BLOG_DEBUG, "UDPGW flow stream=%u/%u", stream, (unsigned int)num_udpgw_clients);
         SocksUdpGwClient_SubmitPacket(&udpgw_clients[stream], local_addr, remote_addr,
                                       is_dns, data, data_len);
     } else if (udp_mode == UdpModeSocks) {
