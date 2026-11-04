@@ -295,18 +295,18 @@ int main (int argc, char **argv)
         goto fail1;
     }
 
-    // derive the safe mapping ceiling from the effective process FD budget.
-    if (!configure_capacity()) {
-        BLog(BLOG_ERROR, "Unable to establish a safe UDPGW capacity");
-        goto fail1;
-    }
-    
     // compute MTUs
     udpgw_mtu = udpgw_compute_mtu(options.udp_mtu);
     if (udpgw_mtu < 0 || udpgw_mtu > PACKETPROTO_MAXPAYLOAD) {
         udpgw_mtu = PACKETPROTO_MAXPAYLOAD;
     }
     pp_mtu = udpgw_mtu + sizeof(struct packetproto_header);
+
+    // derive the safe mapping ceiling from the effective process resource budgets.
+    if (!configure_capacity()) {
+        BLog(BLOG_ERROR, "Unable to establish a safe UDPGW capacity");
+        goto fail1;
+    }
     
     // init time
     BTime_Init();
