@@ -38,7 +38,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 360
     env:
-      PROFILE: ${{ inputs.profile || 'smoke' }}
+      PROFILE: ${{ inputs.profile || (contains(github.event.head_commit.message, '[wp7c-ramp]') && 'ramp') || 'smoke' }}
     steps:
       - name: Checkout WP7-C
         uses: actions/checkout@v4
@@ -146,9 +146,6 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          if ! ulimit -n 131072; then
-            echo "Unable to raise RLIMIT_NOFILE to 131072; current limit will be recorded." | tee -a wp7c-benchmark-reports/resource-warnings.txt
-          fi
           sudo sysctl -w net.ipv4.ip_local_port_range="1024 65535"
           {
             echo "nofile_soft=$(ulimit -Sn)"
@@ -181,11 +178,15 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          ulimit -n 131072 || echo "RLIMIT_NOFILE raise unavailable; using current limit"
+          if ! sudo prlimit --pid "$$" --nofile=131072:131072; then
+            echo "Unable to raise RLIMIT_NOFILE for this step; using the actual inherited limit."
+          fi
+          ulimit -n 131072 || echo "RLIMIT_NOFILE remains $(ulimit -Sn):$(ulimit -Hn)"
+          echo "ramp_step_nofile=$(ulimit -Sn):$(ulimit -Hn)"
           set +e
           python3 tests/udpgw-bench/ramp.py \
             --engine c --engine-bin "$C_BIN" --echo-bin "$ECHO_BIN" \
-            --clients 64 --duration 2 --workers 4 --up-rate-pps 10000 \
+            --clients 64 --duration 2 --workers 4 --up-rate-pps 10000 --setup-timeout 90 \
             --output wp7c-benchmark-reports/c-ramp.json
           STATUS=$?
           set -e
@@ -196,11 +197,15 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          ulimit -n 131072 || echo "RLIMIT_NOFILE raise unavailable; using current limit"
+          if ! sudo prlimit --pid "$$" --nofile=131072:131072; then
+            echo "Unable to raise RLIMIT_NOFILE for this step; using the actual inherited limit."
+          fi
+          ulimit -n 131072 || echo "RLIMIT_NOFILE remains $(ulimit -Sn):$(ulimit -Hn)"
+          echo "ramp_step_nofile=$(ulimit -Sn):$(ulimit -Hn)"
           set +e
           python3 tests/udpgw-bench/ramp.py \
             --engine rust --engine-bin "$RUST_BIN" --echo-bin "$ECHO_BIN" \
-            --clients 64 --duration 2 --workers 4 --up-rate-pps 10000 \
+            --clients 64 --duration 2 --workers 4 --up-rate-pps 10000 --setup-timeout 90 \
             --output wp7c-benchmark-reports/rust-ramp.json
           STATUS=$?
           set -e

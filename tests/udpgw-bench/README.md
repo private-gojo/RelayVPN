@@ -32,7 +32,7 @@ python3 tests/udpgw-bench/matrix.py --engine c \
 
 python3 tests/udpgw-bench/ramp.py --engine rust \
   --engine-bin /path/to/badvpn-udpgw --echo-bin /tmp/udpgw-echo \
-  --clients 64 --up-rate-pps 10000 \
+  --clients 64 --up-rate-pps 10000 --setup-timeout 90 \
   --steps 1000,5000,10000,25000,50000,60000,64000,65000,75000,100000 \
   --output rust-ramp.json
 ```

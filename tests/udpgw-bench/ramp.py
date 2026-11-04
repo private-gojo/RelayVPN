@@ -18,11 +18,12 @@ def main():
     p.add_argument("--duration", type=float, default=2.0)
     p.add_argument("--workers", type=int, default=4)
     p.add_argument("--up-rate-pps", type=int, default=10000)
+    p.add_argument("--setup-timeout", type=float, default=90.0)
     p.add_argument("--steps", default="1000,5000,10000,25000,50000,60000,64000,65000,75000,100000")
     p.add_argument("--output", required=True)
     a = p.parse_args()
     steps = [int(value) for value in a.steps.split(",")]
-    if a.clients < 1 or a.workers < 1 or a.duration <= 0 or a.up_rate_pps < 0:
+    if a.clients < 1 or a.workers < 1 or a.duration <= 0 or a.setup_timeout <= 0 or a.up_rate_pps < 0:
         p.error("clients/workers must be positive, duration positive, and up-rate-pps non-negative")
     if not steps or any(value < 1 for value in steps) or steps != sorted(set(steps)):
         p.error("steps must be positive, unique, and strictly increasing")
@@ -31,7 +32,8 @@ def main():
             "--engine-bin", a.engine_bin, "--echo-bin", a.echo_bin, "--clients", str(a.clients),
             "--payload-size", str(a.payload_size), "--udp-mtu", str(a.udp_mtu),
             "--direction", "up", "--duration", str(a.duration),
-            "--workers", str(a.workers), "--up-rate-pps", str(a.up_rate_pps)]
+            "--workers", str(a.workers), "--up-rate-pps", str(a.up_rate_pps),
+            "--setup-timeout", str(a.setup_timeout)]
     results, last_ok, first_error = [], 0, None
     for requested in steps:
         output = work / f"ramp-{requested}.json"
@@ -52,6 +54,8 @@ def main():
                 "status": record.get("status"), "runner_exit": proc.returncode,
                 "metrics": record.get("metrics"), "setup": setup,
                 "environment": record.get("environment"),
+                "setup_timeout_seconds": record.get("case", {}).get("setup_timeout_seconds"),
+                "setup_elapsed_seconds": max((float(x.get("setup_elapsed_seconds", 0)) for x in setup), default=0),
                 "server_log_tail": record.get("server_log_tail")}
         if proc.returncode != 0:
             item["stdout_tail"] = proc.stdout[-2000:]
@@ -64,6 +68,7 @@ def main():
         break
     report = {"engine": a.engine, "clients": a.clients, "payload_size": a.payload_size,
               "udp_mtu": a.udp_mtu, "up_rate_pps": a.up_rate_pps,
+              "setup_timeout_seconds": a.setup_timeout,
               "last_successful_active_flows": last_ok, "first_error": first_error, "results": results}
     Path(a.output).write_text(json.dumps(report, indent=2, sort_keys=True) + "\n")
     print(json.dumps({"engine": a.engine, "last_successful_active_flows": last_ok,

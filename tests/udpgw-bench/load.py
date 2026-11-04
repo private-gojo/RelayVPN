@@ -147,8 +147,9 @@ async def probe_loop(session, target, direct_sock, state, payload_size, stop_at)
 
 
 async def worker_async(worker_id, sessions_spec, target, payload_size, direction, duration,
-                       rate_per_session, start_event, ready_queue, result_queue):
+                       rate_per_session, setup_timeout, start_event, ready_queue, result_queue):
     started_cpu = time.process_time()
+    setup_started = time.monotonic()
     state = {
         "expected_acks": sum(len(flows) for _, flows in sessions_spec),
         "acks": set(),
@@ -182,7 +183,7 @@ async def worker_async(worker_id, sessions_spec, target, payload_size, direction
             await writer.drain()
 
         if state["expected_acks"]:
-            await asyncio.wait_for(state["ack_event"].wait(), timeout=45)
+            await asyncio.wait_for(state["ack_event"].wait(), timeout=setup_timeout)
 
         if worker_id == 0 and sessions and sessions[0]["flows"]:
             direct_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -196,6 +197,7 @@ async def worker_async(worker_id, sessions_spec, target, payload_size, direction
             "ready": True,
             "expected_flows": state["expected_acks"],
             "acked_flows": len(state["acks"]),
+            "setup_elapsed_seconds": round(time.monotonic() - setup_started, 3),
         })
 
         await asyncio.to_thread(start_event.wait)
@@ -246,6 +248,7 @@ async def worker_async(worker_id, sessions_spec, target, payload_size, direction
             "ready": False,
             "expected_flows": state["expected_acks"],
             "acked_flows": len(state["acks"]),
+            "setup_elapsed_seconds": round(time.monotonic() - setup_started, 3),
             "error": repr(exc),
         })
         result_queue.put({"worker": worker_id, "error": repr(exc)})
@@ -365,7 +368,7 @@ def read_final_json(proc):
 def run_case(args):
     if args.flows < 1 or args.clients < 1 or args.workers < 1:
         raise SystemExit("flows, clients, and workers must be positive")
-    if args.duration <= 0 or args.up_rate_pps < 0 or args.down_rate_pps < 0:
+    if args.duration <= 0 or args.setup_timeout <= 0 or args.up_rate_pps < 0 or args.down_rate_pps < 0:
         raise SystemExit("duration must be positive and down-rate-pps non-negative")
     if args.flows > args.clients * 65536:
         raise SystemExit("legacy conid namespace exceeded: flows must be <= clients * 65536")
@@ -446,7 +449,7 @@ def run_case(args):
             args=(index, spec, target, args.payload_size, args.direction,
                   args.duration,
                   args.up_rate_pps / args.clients if args.up_rate_pps else 0,
-                  start_event, ready_queue, result_queue),
+                  args.setup_timeout, start_event, ready_queue, result_queue),
         )
         process.start()
         workers.append(process)
@@ -454,7 +457,7 @@ def run_case(args):
     ready = []
     for _ in workers:
         try:
-            ready.append(ready_queue.get(timeout=60))
+            ready.append(ready_queue.get(timeout=args.setup_timeout + 15))
         except Exception:
             ready.append({"ready": False, "error": "worker setup timeout"})
 
@@ -633,6 +636,7 @@ def run_case(args):
             "udp_mtu": args.udp_mtu,
             "direction": args.direction,
             "duration_seconds": args.duration,
+            "setup_timeout_seconds": args.setup_timeout,
             "workers": worker_count,
             "up_rate_pps": args.up_rate_pps,
             "down_rate_pps": args.down_rate_pps,
@@ -657,6 +661,7 @@ def main():
     parser.add_argument("--udp-mtu", type=int, default=1200)
     parser.add_argument("--direction", choices=("up", "down", "bidi"), required=True)
     parser.add_argument("--duration", type=float, default=5.0)
+    parser.add_argument("--setup-timeout", type=float, default=45.0)
     parser.add_argument("--workers", type=int, default=max(1, min(8, os.cpu_count() or 1)))
     parser.add_argument("--up-rate-pps", type=int, default=0)
     parser.add_argument("--down-rate-pps", type=int, default=0)
