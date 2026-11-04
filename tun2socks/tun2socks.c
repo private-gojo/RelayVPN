@@ -83,6 +83,7 @@
 
 #define LOGGER_STDOUT 1
 #define LOGGER_SYSLOG 2
+#define UDPGW_MAX_STREAMS 2
 
 #define SYNC_DECL \
     BPending sync_mark; \
@@ -193,8 +194,9 @@ PacketPassInterface device_read_interface;
 enum UdpMode {UdpModeNone, UdpModeUdpgw, UdpModeSocks};
 enum UdpMode udp_mode;
 
-// udpgw client
-SocksUdpGwClient udpgw_client;
+// UDPGW clients use independent 16-bit connection-ID spaces per TCP stream.
+SocksUdpGwClient udpgw_clients[UDPGW_MAX_STREAMS];
+int num_udpgw_clients;
 int udp_mtu;
 
 // SOCKS5-UDP client
@@ -260,6 +262,41 @@ static void client_socks_recv_handler_done (struct tcp_client *client, int data_
 static int client_socks_recv_send_out (struct tcp_client *client);
 static err_t client_sent_func (void *arg, struct tcp_pcb *tpcb, u16_t len);
 static void udp_send_packet_to_device (void *unused, BAddr local_addr, BAddr remote_addr, const uint8_t *data, int data_len);
+static unsigned int udpgw_stream_index (BAddr local_addr, BAddr remote_addr);
+static void free_udpgw_clients (void);
+
+unsigned int udpgw_stream_index (BAddr local_addr, BAddr remote_addr)
+{
+    ASSERT(num_udpgw_clients > 0)
+
+    char local_text[BADDR_MAX_PRINT_LEN];
+    char remote_text[BADDR_MAX_PRINT_LEN];
+    BAddr_Print(&local_addr, local_text);
+    BAddr_Print(&remote_addr, remote_text);
+
+    // FNV-1a keeps each UDP flow on the same stream without hashing struct padding.
+    uint32_t hash = 2166136261u;
+    const char *parts[2] = {local_text, remote_text};
+    for (int part = 0; part < 2; part++) {
+        const unsigned char *p = (const unsigned char *)parts[part];
+        while (*p) {
+            hash ^= *p++;
+            hash *= 16777619u;
+        }
+        hash ^= 0xffu;
+        hash *= 16777619u;
+    }
+
+    return hash % (unsigned int)num_udpgw_clients;
+}
+
+void free_udpgw_clients (void)
+{
+    while (num_udpgw_clients > 0) {
+        num_udpgw_clients--;
+        SocksUdpGwClient_Free(&udpgw_clients[num_udpgw_clients]);
+    }
+}
 
 int main (int argc, char **argv)
 {
@@ -391,14 +428,32 @@ int main (int argc, char **argv)
             goto fail4a;
         }
         
-        // init udpgw client
-        if (!SocksUdpGwClient_Init(&udpgw_client, udp_mtu, options.udpgw_max_connections,
-            options.udpgw_connection_buffer_size, UDPGW_KEEPALIVE_TIME, socks_server_addr,
-            socks_auth_info, socks_num_auth_info, udpgw_remote_server_addr,
-            UDPGW_RECONNECT_TIME, &ss, NULL, udp_send_packet_to_device))
-        {
-            BLog(BLOG_ERROR, "SocksUdpGwClient_Init failed");
-            goto fail4a;
+        // Keep each legacy UDPGW stream within its 16-bit connection-ID namespace.
+        num_udpgw_clients = (options.udpgw_max_connections + UINT16_MAX) / (UINT16_MAX + 1);
+        if (num_udpgw_clients < 1) {
+            num_udpgw_clients = 1;
+        }
+        if (num_udpgw_clients > UDPGW_MAX_STREAMS) {
+            num_udpgw_clients = UDPGW_MAX_STREAMS;
+        }
+        int per_stream_capacity = (options.udpgw_max_connections + num_udpgw_clients - 1) / num_udpgw_clients;
+
+        BLog(BLOG_NOTICE, "UDPGW capacity: requested=%d streams=%d per_stream=%d",
+             options.udpgw_max_connections, num_udpgw_clients, per_stream_capacity);
+
+        int initialized_streams = 0;
+        while (initialized_streams < num_udpgw_clients) {
+            if (!SocksUdpGwClient_Init(&udpgw_clients[initialized_streams], udp_mtu, per_stream_capacity,
+                options.udpgw_connection_buffer_size, UDPGW_KEEPALIVE_TIME, socks_server_addr,
+                socks_auth_info, socks_num_auth_info, udpgw_remote_server_addr,
+                UDPGW_RECONNECT_TIME, &ss, NULL, udp_send_packet_to_device))
+            {
+                BLog(BLOG_ERROR, "SocksUdpGwClient_Init failed for stream %d", initialized_streams);
+                num_udpgw_clients = initialized_streams;
+                free_udpgw_clients();
+                goto fail4a;
+            }
+            initialized_streams++;
         }
     } else if (options.socks5_udp) {
         udp_mode = UdpModeSocks;
@@ -469,7 +524,7 @@ int main (int argc, char **argv)
 fail5:
     BPending_Free(&lwip_init_job);
     if (udp_mode == UdpModeUdpgw) {
-        SocksUdpGwClient_Free(&udpgw_client);
+        free_udpgw_clients();
     } else if (udp_mode == UdpModeSocks) {
         SocksUdpClient_Free(&socks_udp_client);
     }
@@ -1199,7 +1254,8 @@ int process_device_udp_packet (uint8_t *data, int data_len)
     
     // submit packet to udpgw or SOCKS UDP
     if (udp_mode == UdpModeUdpgw) {
-        SocksUdpGwClient_SubmitPacket(&udpgw_client, local_addr, remote_addr,
+        unsigned int stream = udpgw_stream_index(local_addr, remote_addr);
+        SocksUdpGwClient_SubmitPacket(&udpgw_clients[stream], local_addr, remote_addr,
                                       is_dns, data, data_len);
     } else if (udp_mode == UdpModeSocks) {
         SocksUdpClient_SubmitPacket(&socks_udp_client, local_addr, remote_addr, data, data_len);
