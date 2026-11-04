@@ -1,0 +1,96 @@
+name: WP6 - Live UDPGW wire golden vectors
+
+on:
+  push:
+    branches:
+      - work/wp6-live-golden-vectors-20261104
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: wp6-live-golden-vectors
+  cancel-in-progress: false
+
+jobs:
+  live-wire-golden-vectors:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout WP2 conformance base plus WP6 golden-vector tests
+        uses: actions/checkout@v4
+
+      - name: Install build and test tools
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y build-essential cmake python3 iproute2
+
+      - name: Build the unchanged BadVPN UDPGW target
+        run: |
+          set -euo pipefail
+          BUILD_DIR="$RUNNER_TEMP/wp6-udpgw-build"
+          cmake -S . -B "$BUILD_DIR" \
+            -G "Unix Makefiles" \
+            -DBUILD_NOTHING_BY_DEFAULT=ON \
+            -DBUILD_UDPGW=ON
+          cmake --build "$BUILD_DIR" --parallel 2 --target badvpn-udpgw
+          test -x "$BUILD_DIR/udpgw/badvpn-udpgw"
+
+      - name: Run complete WP2 suite and WP6 exact live wire checks
+        shell: bash
+        run: |
+          set -euo pipefail
+          BUILD_DIR="$RUNNER_TEMP/wp6-udpgw-build"
+          RESOLV_BACKUP="$RUNNER_TEMP/wp6-resolv.conf"
+          UDPGW_LOG="$GITHUB_WORKSPACE/wp6-udpgw.log"
+          DNS_LOG="$GITHUB_WORKSPACE/wp6-dns-stub.log"
+          DNS_PID=""
+
+          sudo cp -L /etc/resolv.conf "$RESOLV_BACKUP"
+          cleanup() {
+            set +e
+            if [[ -n "$DNS_PID" ]]; then
+              sudo kill "$DNS_PID" 2>/dev/null
+              wait "$DNS_PID" 2>/dev/null
+            fi
+            sudo cp "$RESOLV_BACKUP" /etc/resolv.conf
+          }
+          trap cleanup EXIT
+
+          sudo sh -c 'printf "nameserver 127.0.0.1\noptions timeout:1 attempts:1\n" > /etc/resolv.conf'
+          sudo python3 tests/udpgw-conformance/dns_stub.py > "$DNS_LOG" 2>&1 &
+          DNS_PID=$!
+
+          for attempt in $(seq 1 30); do
+            if grep -q "listening on 127.0.0.1:53" "$DNS_LOG"; then
+              break
+            fi
+            if ! kill -0 "$DNS_PID" 2>/dev/null; then
+              cat "$DNS_LOG"
+              exit 1
+            fi
+            sleep 0.1
+          done
+          grep -q "listening on 127.0.0.1:53" "$DNS_LOG"
+
+          UDPGW_BIN="$BUILD_DIR/udpgw/badvpn-udpgw" \
+          UDPGW_DNS_TEST=1 \
+          UDPGW_LOG_FILE="$UDPGW_LOG" \
+            python3 -m unittest discover \
+              -s tests/udpgw-conformance \
+              -p 'test_*.py' \
+              -v
+
+      - name: Upload WP6 conformance logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: relayvpn-wp6-live-golden-vectors
+          path: |
+            wp6-udpgw.log
+            wp6-dns-stub.log
+          if-no-files-found: warn
+          retention-days: 30
