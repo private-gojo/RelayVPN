@@ -14,6 +14,7 @@ def main():
     p.add_argument("--echo-bin", required=True)
     p.add_argument("--clients", type=int, default=64)
     p.add_argument("--payload-size", type=int, default=64)
+    p.add_argument("--udp-mtu", type=int, default=1200)
     p.add_argument("--duration", type=float, default=2.0)
     p.add_argument("--workers", type=int, default=4)
     p.add_argument("--steps", default="1000,5000,10000,25000,50000,75000,100000")
@@ -22,7 +23,8 @@ def main():
     work = Path(tempfile.mkdtemp(prefix="udpgw-ramp-"))
     base = [sys.executable, str(Path(__file__).with_name("load.py")), "--engine", a.engine,
             "--engine-bin", a.engine_bin, "--echo-bin", a.echo_bin, "--clients", str(a.clients),
-            "--payload-size", str(a.payload_size), "--direction", "up", "--duration", str(a.duration),
+            "--payload-size", str(a.payload_size), "--udp-mtu", str(a.udp_mtu),
+            "--direction", "up", "--duration", str(a.duration),
             "--workers", str(a.workers)]
     results, last_ok, first_error = [], 0, None
     for requested in map(int, a.steps.split(",")):
@@ -49,7 +51,7 @@ def main():
             continue
         first_error = item
         break
-    report = {"engine": a.engine, "clients": a.clients, "payload_size": a.payload_size,
+    report = {"engine": a.engine, "clients": a.clients, "payload_size": a.payload_size, "udp_mtu": a.udp_mtu,
               "last_successful_active_flows": last_ok, "first_error": first_error, "results": results}
     Path(a.output).write_text(json.dumps(report, indent=2, sort_keys=True) + "\n")
     print(json.dumps({"engine": a.engine, "last_successful_active_flows": last_ok,

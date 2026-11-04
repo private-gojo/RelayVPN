@@ -54,13 +54,15 @@ def main():
     p.add_argument("--clients", default="1,8,64")
     p.add_argument("--payload-sizes", default="64,512,1200")
     p.add_argument("--directions", default="up,down,bidi")
+    p.add_argument("--udp-mtu", type=int, default=1200)
     p.add_argument("--duration", type=float, default=5.0)
     p.add_argument("--repeats", type=int, default=3)
     p.add_argument("--workers", type=int, default=4)
     p.add_argument("--output", required=True)
     a = p.parse_args()
     base = [sys.executable, str(Path(__file__).with_name("load.py")), "--engine", a.engine,
-            "--engine-bin", a.engine_bin, "--echo-bin", a.echo_bin, "--workers", str(a.workers)]
+            "--engine-bin", a.engine_bin, "--echo-bin", a.echo_bin, "--workers", str(a.workers),
+            "--udp-mtu", str(a.udp_mtu)]
     work = Path(tempfile.mkdtemp(prefix="udpgw-matrix-"))
     results, cases = [], 0
     for flows in map(int, a.flows.split(",")):
@@ -69,7 +71,7 @@ def main():
                 continue
             for size in map(int, a.payload_sizes.split(",")):
                 for direction in a.directions.split(","):
-                    case = {"flows": flows, "clients": clients, "payload_size": size,
+                    case = {"flows": flows, "clients": clients, "payload_size": size, "udp_mtu": a.udp_mtu,
                             "direction": direction, "duration": a.duration}
                     records = []
                     for repeat in range(1, a.repeats + 1):

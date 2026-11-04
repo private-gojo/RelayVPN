@@ -338,6 +338,8 @@ def run_case(args):
         raise SystemExit("legacy conid namespace exceeded: flows must be <= clients * 65536")
     if args.payload_size < META.size:
         raise SystemExit(f"payload-size must be >= {META.size}")
+    if args.udp_mtu < args.payload_size:
+        raise SystemExit("udp-mtu must be >= payload-size")
 
     flow_lists = [[] for _ in range(args.clients)]
     for token in range(args.flows):
@@ -373,7 +375,7 @@ def run_case(args):
         "--listen-addr", f"127.0.0.1:{listen_port}",
         "--max-clients", str(args.clients),
         "--max-connections-for-client", str(max_per_client),
-        "--udp-mtu", str(args.payload_size),
+        "--udp-mtu", str(args.udp_mtu),
         "--client-socket-sndbuf", "1048576",
         "--loglevel", "none",
     ]
@@ -398,6 +400,7 @@ def run_case(args):
         target_proc.terminate()
         raise RuntimeError("UDPGW listener did not become ready")
 
+    time.sleep(0.15)
     server_before = proc_snapshot(server_proc.pid)
     ctx = mp.get_context("fork")
     start_event = ctx.Event()
@@ -576,6 +579,7 @@ def run_case(args):
             "flows": args.flows,
             "clients": args.clients,
             "payload_size": args.payload_size,
+            "udp_mtu": args.udp_mtu,
             "direction": args.direction,
             "duration_seconds": args.duration,
             "workers": worker_count,
@@ -607,6 +611,7 @@ def main():
     parser.add_argument("--flows", type=int, required=True)
     parser.add_argument("--clients", type=int, required=True)
     parser.add_argument("--payload-size", type=int, choices=(64, 512, 1200), required=True)
+    parser.add_argument("--udp-mtu", type=int, default=1200)
     parser.add_argument("--direction", choices=("up", "down", "bidi"), required=True)
     parser.add_argument("--duration", type=float, default=5.0)
     parser.add_argument("--workers", type=int, default=max(1, min(8, os.cpu_count() or 1)))
