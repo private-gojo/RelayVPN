@@ -38,7 +38,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 360
     env:
-      PROFILE: ${{ inputs.profile || (contains(github.event.head_commit.message, '[wp7c-ramp]') && 'ramp') || 'smoke' }}
+      PROFILE: ${{ inputs.profile || (contains(github.event.head_commit.message, '[wp7c-ramp]') && 'ramp') || (contains(github.event.head_commit.message, '[wp7c-full]') && 'full') || 'smoke' }}
     steps:
       - name: Checkout WP7-C
         uses: actions/checkout@v4
@@ -114,7 +114,7 @@ jobs:
           echo "ECHO_BIN=$RUNNER_TEMP/udpgw-echo" >> "$GITHUB_ENV"
 
       - name: Smoke matrix - C
-        if: (github.event_name == 'push' && !contains(github.event.head_commit.message, '[wp7c-ramp]')) || inputs.profile == 'smoke'
+        if: (github.event_name == 'push' && !contains(github.event.head_commit.message, '[wp7c-ramp]') && !contains(github.event.head_commit.message, '[wp7c-full]')) || inputs.profile == 'smoke'
         run: |
           set -euo pipefail
           for direction in up down bidi; do
@@ -128,7 +128,7 @@ jobs:
           done
 
       - name: Smoke matrix - Rust
-        if: (github.event_name == 'push' && !contains(github.event.head_commit.message, '[wp7c-ramp]')) || inputs.profile == 'smoke'
+        if: (github.event_name == 'push' && !contains(github.event.head_commit.message, '[wp7c-ramp]') && !contains(github.event.head_commit.message, '[wp7c-full]')) || inputs.profile == 'smoke'
         run: |
           set -euo pipefail
           for direction in up down bidi; do
@@ -142,7 +142,7 @@ jobs:
           done
 
       - name: Prepare expanded benchmark resource envelope
-        if: inputs.profile == 'full' || inputs.profile == 'ramp' || (github.event_name == 'push' && contains(github.event.head_commit.message, '[wp7c-ramp]'))
+        if: inputs.profile == 'full' || inputs.profile == 'ramp' || (github.event_name == 'push' && (contains(github.event.head_commit.message, '[wp7c-ramp]') || contains(github.event.head_commit.message, '[wp7c-full]')))
         shell: bash
         run: |
           set -euo pipefail
@@ -154,23 +154,29 @@ jobs:
           } | tee wp7c-benchmark-reports/expanded-limits.txt
 
       - name: Full three-run C matrix
-        if: inputs.profile == 'full'
+        if: inputs.profile == 'full' || (github.event_name == 'push' && contains(github.event.head_commit.message, '[wp7c-full]'))
         run: |
           set -euo pipefail
-          ulimit -n 131072 || echo "RLIMIT_NOFILE raise unavailable; using current limit"
+          if ! sudo prlimit --pid "$$" --nofile=131072:131072; then
+            echo "Unable to raise RLIMIT_NOFILE for this step; using the actual inherited limit."
+          fi
+          ulimit -n 131072 || echo "RLIMIT_NOFILE remains $(ulimit -Sn):$(ulimit -Hn)"
           python3 tests/udpgw-bench/matrix.py \
             --engine c --engine-bin "$C_BIN" --echo-bin "$ECHO_BIN" \
-            --duration 5 --repeats 3 --workers 4 \
+            --duration 5 --repeats 3 --workers 4 --up-rate-pps 50000 --down-rate-pps 50000 \
             --output wp7c-benchmark-reports/c-matrix.json
 
       - name: Full three-run Rust matrix
-        if: inputs.profile == 'full'
+        if: inputs.profile == 'full' || (github.event_name == 'push' && contains(github.event.head_commit.message, '[wp7c-full]'))
         run: |
           set -euo pipefail
-          ulimit -n 131072 || echo "RLIMIT_NOFILE raise unavailable; using current limit"
+          if ! sudo prlimit --pid "$$" --nofile=131072:131072; then
+            echo "Unable to raise RLIMIT_NOFILE for this step; using the actual inherited limit."
+          fi
+          ulimit -n 131072 || echo "RLIMIT_NOFILE remains $(ulimit -Sn):$(ulimit -Hn)"
           python3 tests/udpgw-bench/matrix.py \
             --engine rust --engine-bin "$RUST_BIN" --echo-bin "$ECHO_BIN" \
-            --duration 5 --repeats 3 --workers 4 \
+            --duration 5 --repeats 3 --workers 4 --up-rate-pps 50000 --down-rate-pps 50000 \
             --output wp7c-benchmark-reports/rust-matrix.json
 
       - name: C active-flow capacity ramp

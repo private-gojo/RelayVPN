@@ -38,8 +38,10 @@ python3 tests/udpgw-bench/ramp.py --engine rust \
 ```
 
 Default matrix: payload 64/512/1200 B × flows 1/100/10k × TCP clients 1/8/64 ×
-up/down/bidirectional × three runs. UDP MTU is fixed at 1200 B across payload sizes so the
-per-flow receive-buffer budget is comparable. Cases execute serially to avoid cross-case CPU contention.
+up/down/bidirectional × three runs. Uplink and downlink are paced at 50k aggregate packets/s
+by default (override `--up-rate-pps` and `--down-rate-pps`). UDP MTU is fixed at 1200 B
+across payload sizes so the per-flow receive-buffer budget is comparable. Cases execute serially
+to avoid cross-case CPU contention.
 
 ## Metrics and validity
 

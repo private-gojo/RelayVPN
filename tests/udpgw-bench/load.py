@@ -19,7 +19,7 @@ META = struct.Struct("<4sBIQQ")
 PACKET_PREFIX = struct.Struct("<H")
 UDPGW_HEADER = struct.Struct("<BH")
 FLAG_KEEPALIVE = 1
-BATCH_FRAMES = 32
+BATCH_FRAMES = 256
 
 
 def make_payload(kind, token, seq, timestamp_ns, size):
@@ -98,8 +98,20 @@ async def produce_data(session, state, target, payload_size, stop_at, rate_pps):
     seq = 0
     cursor = 0
     next_due = time.monotonic()
+    batch_interval = BATCH_FRAMES / rate_pps if rate_pps > 0 else 0
     while time.monotonic() < stop_at:
-        for _ in range(BATCH_FRAMES):
+        if rate_pps > 0:
+            now = time.monotonic()
+            if now < next_due:
+                await asyncio.sleep(next_due - now)
+                now = time.monotonic()
+            frame_count = min(BATCH_FRAMES, max(0, int((stop_at - now) * rate_pps)))
+            if frame_count == 0:
+                break
+        else:
+            frame_count = BATCH_FRAMES
+
+        for _ in range(frame_count):
             conid, token = flows[cursor]
             cursor = (cursor + 1) % len(flows)
             seq += 1
@@ -109,8 +121,7 @@ async def produce_data(session, state, target, payload_size, stop_at, rate_pps):
             state["up_sent"] += 1
         await writer.drain()
         if rate_pps > 0:
-            next_due += BATCH_FRAMES / rate_pps
-            await asyncio.sleep(max(0.0, next_due - time.monotonic()))
+            next_due = max(next_due + batch_interval, time.monotonic() + batch_interval)
         else:
             await asyncio.sleep(0)
 
@@ -448,7 +459,7 @@ def run_case(args):
             target=worker_entry,
             args=(index, spec, target, args.payload_size, args.direction,
                   args.duration,
-                  args.up_rate_pps / args.clients if args.up_rate_pps else 0,
+                  args.up_rate_pps / min(args.flows, args.clients) if args.up_rate_pps else 0,
                   args.setup_timeout, start_event, ready_queue, result_queue),
         )
         process.start()

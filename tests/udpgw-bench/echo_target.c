@@ -142,8 +142,19 @@ int main(int argc, char **argv) {
 
     while (!stopping) {
         struct pollfd pfd = {.fd = fd, .events = POLLIN};
+        struct timespec wait_ts;
+        struct timespec *wait_ptr = NULL;
         int timeout = (mode == 2 && down_started && active_peers > 0 && rate_pps == 0) ? 0 : 10;
-        int pr = poll(&pfd, 1, timeout);
+        if (mode == 2 && down_started && active_peers > 0 && rate_pps > 0) {
+            uint64_t interval = 1000000000ull / rate_pps;
+            if (interval == 0) interval = 1;
+            uint64_t wait_ns = interval * BATCH;
+            if (wait_ns > 10000000ull) wait_ns = 10000000ull;
+            wait_ts.tv_sec = (time_t)(wait_ns / 1000000000ull);
+            wait_ts.tv_nsec = (long)(wait_ns % 1000000000ull);
+            wait_ptr = &wait_ts;
+        }
+        int pr = wait_ptr ? ppoll(&pfd, 1, wait_ptr, NULL) : poll(&pfd, 1, timeout);
         if (pr < 0 && errno != EINTR) { perror("poll"); break; }
 
         if (pr > 0 && (pfd.revents & POLLIN)) {

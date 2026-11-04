@@ -58,11 +58,17 @@ def main():
     p.add_argument("--duration", type=float, default=5.0)
     p.add_argument("--repeats", type=int, default=3)
     p.add_argument("--workers", type=int, default=4)
+    p.add_argument("--up-rate-pps", type=int, default=50000)
+    p.add_argument("--down-rate-pps", type=int, default=50000)
     p.add_argument("--output", required=True)
     a = p.parse_args()
+    if a.up_rate_pps < 0 or a.down_rate_pps < 0:
+        p.error("packet rates must be non-negative")
     base = [sys.executable, str(Path(__file__).with_name("load.py")), "--engine", a.engine,
             "--engine-bin", a.engine_bin, "--echo-bin", a.echo_bin, "--workers", str(a.workers),
-            "--udp-mtu", str(a.udp_mtu)]
+            "--udp-mtu", str(a.udp_mtu),
+            "--up-rate-pps", str(a.up_rate_pps),
+            "--down-rate-pps", str(a.down_rate_pps)]
     work = Path(tempfile.mkdtemp(prefix="udpgw-matrix-"))
     results, cases = [], 0
     for flows in map(int, a.flows.split(",")):
@@ -72,7 +78,8 @@ def main():
             for size in map(int, a.payload_sizes.split(",")):
                 for direction in a.directions.split(","):
                     case = {"flows": flows, "clients": clients, "payload_size": size, "udp_mtu": a.udp_mtu,
-                            "direction": direction, "duration": a.duration}
+                            "direction": direction, "duration": a.duration,
+                            "up_rate_pps": a.up_rate_pps, "down_rate_pps": a.down_rate_pps}
                     records = []
                     for repeat in range(1, a.repeats + 1):
                         item = run_one(base, case, repeat, work)
