@@ -717,7 +717,7 @@ void print_help (const char *name)
         "        [--append-source-to-username]\n"
         "        [--udpgw-remote-server-addr <addr>]\n"
         "        [--udpgw-max-connections <number>]\n"
-        "        [--udpgw-connection-buffer-size <number>]\n"
+        "        [--udpgw-connection-buffer-size <1-128>]\n"
         "        [--udpgw-transparent-dns]\n"
         "        [--socks5-udp]\n"
         "Address format is a.b.c.d:port (IPv4) or [addr]:port (IPv6).\n",
@@ -934,10 +934,15 @@ int parse_arguments (int argc, char *argv[])
                 fprintf(stderr, "%s: requires an argument\n", arg);
                 return 0;
             }
-            if ((options.udpgw_connection_buffer_size = atoi(argv[i + 1])) <= 0) {
-                fprintf(stderr, "%s: wrong argument\n", arg);
+            errno = 0;
+            char *end = NULL;
+            long requested = strtol(argv[i + 1], &end, 10);
+            if (errno == ERANGE || end == argv[i + 1] || *end != '\0' ||
+                requested < 1 || requested > 128) {
+                fprintf(stderr, "%s: expected a value from 1 to 128\n", arg);
                 return 0;
             }
+            options.udpgw_connection_buffer_size = (int)requested;
             i++;
         }
         else if (!strcmp(arg, "--udpgw-transparent-dns")) {
