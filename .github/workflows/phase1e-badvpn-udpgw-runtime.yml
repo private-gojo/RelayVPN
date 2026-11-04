@@ -234,14 +234,18 @@ jobs:
           echo 'PASS: UDP packets routed through both UDPGW streams'
 
           echo '--- Shutdown and resource cleanup ---'
-          sudo kill -TERM "$TUN_PID"
-          sudo kill -TERM "$UDPGW_PID"
           set +e
+          sudo kill -TERM "$TUN_PID"
+          TUN_KILL_STATUS=$?
+          sudo kill -TERM "$UDPGW_PID"
+          UDPGW_KILL_STATUS=$?
           wait "$TUN_PID"
           TUN_STATUS=$?
           wait "$UDPGW_PID"
           UDPGW_STATUS=$?
           set -e
+          echo "tun2socks_kill_status=$TUN_KILL_STATUS"
+          echo "udpgw_kill_status=$UDPGW_KILL_STATUS"
           echo "tun2socks_exit_status=$TUN_STATUS"
           echo "udpgw_exit_status=$UDPGW_STATUS"
           if [[ "$TUN_STATUS" -ne 0 ]]; then
