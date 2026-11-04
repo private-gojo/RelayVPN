@@ -419,8 +419,10 @@ int UdpGwClient_Init (UdpGwClient *o, int udp_mtu, int max_connections, int send
     o->handler_servererror = handler_servererror;
     o->handler_received = handler_received;
     
-    // limit max connections to number of conid's
+    // The wire protocol uses a 16-bit connection ID per UDPGW stream.
     if (o->max_connections > UINT16_MAX + 1) {
+        BLog(BLOG_WARNING, "requested UDPGW mappings per stream (%d) exceed the 16-bit ID space; limiting to %u",
+             o->max_connections, (unsigned)(UINT16_MAX + 1));
         o->max_connections = UINT16_MAX + 1;
     }
     
