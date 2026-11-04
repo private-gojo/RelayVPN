@@ -180,7 +180,7 @@ static void set_epoll_fd_pointers (BReactor *bsys)
         BFileDescriptor *bfd = (BFileDescriptor *)event->data.ptr;
         ASSERT(bfd->active)
         ASSERT(!bfd->epoll_returned_ptr)
-        bfd->epoll_returned_ptr = (BFileDescriptor **)&event->data.ptr;
+        bfd->epoll_returned_event = event;
     }
 }
 
@@ -836,10 +836,10 @@ int BReactor_Exec (BReactor *bsys)
             // get BFileDescriptor
             BFileDescriptor *bfd = (BFileDescriptor *)event->data.ptr;
             ASSERT(bfd->active)
-            ASSERT(bfd->epoll_returned_ptr == (BFileDescriptor **)&event->data.ptr)
+            ASSERT(bfd->epoll_returned_event == event)
             
             // zero pointer to the epoll entry
-            bfd->epoll_returned_ptr = NULL;
+            bfd->epoll_returned_event = NULL;
             
             // calculate events to report
             int events = 0;
@@ -1156,8 +1156,9 @@ void BReactor_RemoveFileDescriptor (BReactor *bsys, BFileDescriptor *bs)
     ASSERT_FORCE(epoll_ctl(bsys->efd, EPOLL_CTL_DEL, bs->fd, &event) == 0)
     
     // write through epoll returned pointer
-    if (bs->epoll_returned_ptr) {
-        *bs->epoll_returned_ptr = NULL;
+    if (bs->epoll_returned_event) {
+        bs->epoll_returned_event->data.ptr = NULL;
+        bs->epoll_returned_event = NULL;
     }
     
     #endif
