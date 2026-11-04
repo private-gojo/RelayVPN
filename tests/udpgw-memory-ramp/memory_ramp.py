@@ -121,27 +121,6 @@ def wait_for_fd_cleanup(pid, baseline, timeout=5):
     return latest
 
 
-def run(args):
-    os.makedirs(args.artifact_dir, exist_ok=True)
-    log_path = os.path.join(args.artifact_dir, "udpgw-memory-ramp.log")
-    log_file = open(log_path, "w", encoding="utf-8")
-    process = subprocess.Popen(
-        [args.binary,
-         "--listen-addr", "127.0.0.1:0",
-         "--max-clients", "1",
-         "--max-connections-for-client", str(args.max_connections),
-         "--udp-mtu", str(args.udp_mtu),
-         "--loglevel", "notice"],
-        stdout=log_file, stderr=subprocess.STDOUT
-    )
-    # Port 0 is intentionally not used: BadVPN does not publish its selected
-    # ephemeral listener port. Select a free port before starting the process.
-    process.terminate()
-    process.wait(timeout=5)
-    log_file.close()
-    raise RuntimeError("internal listener allocation error")
-
-
 def run_test(args):
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
         probe.bind(("127.0.0.1", 0))
