@@ -10,7 +10,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: wp7b-go-differential
+  group: wp7b-go-differential-${{ github.sha }}
   cancel-in-progress: false
 
 jobs:
@@ -187,6 +187,7 @@ jobs:
         shell: bash
         run: |
           set +e
+          sudo pkill -f '[d]ns_stub.py' 2>/dev/null || true
           if [[ -n "${WP7B_DNS_PID_FILE:-}" && -f "$WP7B_DNS_PID_FILE" ]]; then
             sudo kill "$(cat "$WP7B_DNS_PID_FILE")" 2>/dev/null
           fi
