@@ -61,7 +61,7 @@ jobs:
             --max-total-connections 100000 \
             --fd-limit 262144 \
             --udp-mtu 1472 \
-            --loglevel warning > "$ROOT/udpgw.log" 2>&1 &
+            --loglevel notice > "$ROOT/udpgw.log" 2>&1 &
           UDPGW_PID=$!
 
           cleanup() {
