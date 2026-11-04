@@ -12,10 +12,7 @@ from support import EchoServer, new_client, start_server
 class UDPGWIPv4LifecycleTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        try:
-            start_server()
-        except RuntimeError as error:
-            raise unittest.SkipTest(str(error))
+        start_server()
 
     def setUp(self):
         self.client = new_client()
