@@ -4,6 +4,7 @@ on:
   push:
     branches:
       - phase1e-badvpn-udpgw-runtime
+      - work/udpgw-adaptive-capacity
   workflow_dispatch:
 
 permissions:
@@ -44,6 +45,35 @@ jobs:
           cmake --build "$RUNNER_TEMP/relayvpn-phase1e-build" --parallel 2
           test -x "$RUNNER_TEMP/relayvpn-phase1e-build/tun2socks/badvpn-tun2socks"
           test -x "$RUNNER_TEMP/relayvpn-phase1e-build/udpgw/badvpn-udpgw"
+
+      - name: Validate UDPGW capacity options
+        run: |
+          set -euo pipefail
+          UDPGW="$RUNNER_TEMP/relayvpn-phase1e-build/udpgw/badvpn-udpgw"
+          TUN="$RUNNER_TEMP/relayvpn-phase1e-build/tun2socks/badvpn-tun2socks"
+
+          "$UDPGW" --help > "$RUNNER_TEMP/udpgw-help.txt"
+          grep -q -- '--max-total-connections' "$RUNNER_TEMP/udpgw-help.txt"
+          grep -q -- '--fd-limit' "$RUNNER_TEMP/udpgw-help.txt"
+          "$TUN" --udpgw-max-connections 100000 --help >/dev/null
+
+          if "$UDPGW" --listen-addr 127.0.0.1:7300 --fd-limit 8191 >/dev/null 2>&1; then
+            echo "UDPGW accepted an FD target below 8192" >&2
+            exit 1
+          fi
+          if "$UDPGW" --listen-addr 127.0.0.1:7300 --max-total-connections 999 >/dev/null 2>&1; then
+            echo "UDPGW accepted a global mapping target below 1000" >&2
+            exit 1
+          fi
+          if "$UDPGW" --listen-addr 127.0.0.1:7300 --max-connections-for-client 65537 >/dev/null 2>&1; then
+            echo "UDPGW accepted a per-stream mapping target above the 16-bit ID ceiling" >&2
+            exit 1
+          fi
+          if "$TUN" --udpgw-max-connections 999 --help >/dev/null 2>&1; then
+            echo "tun2socks accepted a UDPGW mapping target below 1000" >&2
+            exit 1
+          fi
+          echo "PASS: UDPGW capacity CLI bounds and 100k client target parsing"
 
       - name: Run TUN to BadVPN to SSH SOCKS5 and UDPGW integration test
         shell: bash
@@ -187,6 +217,10 @@ jobs:
           set -e
           echo "tun2socks_exit_status=$TUN_STATUS"
           echo "udpgw_exit_status=$UDPGW_STATUS"
+          if [[ "$UDPGW_STATUS" -ne 0 ]]; then
+            echo "UDPGW did not exit cleanly on SIGTERM" >&2
+            exit 1
+          fi
           for i in $(seq 1 20); do
             if ! sudo ip -n cli link show tun0 >/dev/null 2>&1; then break; fi
             sleep 1
@@ -205,6 +239,8 @@ jobs:
           echo '--- BadVPN tun2socks log ---'
           tail -n 160 "$ROOT/tun2socks.log"
           echo '--- UDPGW log ---'
+          grep -E 'capacity:|entering event loop' "$ROOT/logs/udpgw.log"
+          grep -q 'effective_mappings=' "$ROOT/logs/udpgw.log"
           tail -n 100 "$ROOT/logs/udpgw.log"
           echo '--- SSH dynamic-forward evidence ---'
           grep -E 'Authenticated to|Local forwarding listening|dynamic request|channel [0-9]+: new' "$ROOT/logs/ssh-client.log" | tail -n 30 || true
