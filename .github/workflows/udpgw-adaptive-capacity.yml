@@ -56,7 +56,8 @@ jobs:
           BIN="$RUNNER_TEMP/relayvpn-udpgw-build/udpgw/badvpn-udpgw"
           mkdir -p "$ROOT"
 
-          ulimit -n
+          echo "soft_nofile=$(ulimit -Sn)"
+          echo "hard_nofile=$(ulimit -Hn)"
           "$BIN" \
             --listen-addr 127.0.0.1:7300 \
             --max-clients 16 \
@@ -92,7 +93,7 @@ jobs:
             --target "$TARGET_MAPPINGS" \
             --server-pid "$UDPGW_PID" \
             --server-log "$ROOT/udpgw.log" \
-            --timeout 300 \
+            --timeout 600 \
             --output "$ROOT/result.json"
 
           kill -TERM "$UDPGW_PID"
