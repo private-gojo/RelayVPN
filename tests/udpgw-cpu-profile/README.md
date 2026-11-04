@@ -43,3 +43,17 @@ Across all 24 trials, the log parser counted 5,643 \`out of client buffer\` even
 At 1,024 mappings and 80k pps, the same run completed every echo with no buffer errors at 82% UDPGW CPU. Treat 80k pps as a provisional clean CI point, not a production guarantee. A separate 256-packet-batch trial produced substantially more client-buffer errors, so burst shape affects results and should remain part of capacity testing.
 
 This profile measures packets per second, not 10k–100k simultaneous mappings. The mapping count in this test never exceeds 1,024. It does not establish a 100k-mapping capacity figure.
+
+
+## Repeat confirmation
+
+Run #10 (commit \`2ab2c342bd1209c0e99b838e30f55975927713e6\`, GitHub Actions run \`41832884103\`) repeated the same 64-packet-batch profile and also completed successfully.
+
+| Active mappings | Offered rate | UDPGW active CPU | Echo completion | Client-buffer errors |
+|---:|---:|---:|---:|---:|
+| 64 | 100k pps | 88.99% | 99.957% | 106 |
+| 256 | 100k pps | 88.32% | 100% | 0 |
+| 1,024 | 80k pps | 74.00% | 100% | 0 |
+| 1,024 | 100k pps | 95.32% | 100% | 0 |
+
+The 1,024-mapping / 100k-pps case used 95.32% of one UDPGW CPU core in the repeat; the C echo helper used 51.33% and the Python harness 11.00%. The two 64-packet-batch runs therefore agree that this workload approaches a single-core ceiling around 100k pps at 1,024 active mappings. Client-buffer loss varied between runs (1,648 events in run #9 versus none in run #10 at that point), so the precise loss rate is not stable enough to promote as a fixed capacity number.
