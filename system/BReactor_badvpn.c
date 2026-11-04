@@ -179,7 +179,7 @@ static void set_epoll_fd_pointers (BReactor *bsys)
         ASSERT(event->data.ptr)
         BFileDescriptor *bfd = (BFileDescriptor *)event->data.ptr;
         ASSERT(bfd->active)
-        ASSERT(!bfd->epoll_returned_ptr)
+        ASSERT(!bfd->epoll_returned_event)
         bfd->epoll_returned_event = event;
     }
 }
@@ -1104,7 +1104,7 @@ int BReactor_AddFileDescriptor (BReactor *bsys, BFileDescriptor *bs)
     }
     
     // set epoll returned pointer
-    bs->epoll_returned_ptr = NULL;
+    bs->epoll_returned_event = NULL;
     
     #endif
     
