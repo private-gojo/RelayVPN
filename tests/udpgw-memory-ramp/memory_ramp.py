@@ -15,7 +15,7 @@ import time
 
 FRAME = struct.Struct("<H")
 HEADER = struct.Struct("<BH")
-UDP_MTU = 1200
+UDP_MTU = 65520
 
 
 def packet(conid, target, payload):
