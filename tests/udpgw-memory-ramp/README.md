@@ -6,16 +6,21 @@ modified.
 
 ## Coverage
 
-- Builds `badvpn-udpgw` with AddressSanitizer and UndefinedBehaviorSanitizer.
-- Verifies that the standalone executable links both sanitizer runtimes.
+- Builds the standalone `badvpn-udpgw` with AddressSanitizer and
+  UndefinedBehaviorSanitizer.
+- Verifies that the instrumented executable links both sanitizer runtimes.
 - Runs the existing `chunkbuffer2_test` under the instrumented build.
 - Opens real UDPGW mappings using distinct 16-bit connection IDs.
-- Sends UDP requests to a local echo server and waits for the matching replies.
-- Measures UDPGW process RSS, FD count, thread count, and elapsed mapping setup
-  time at 16, 64, 256, 512, and 1,024 concurrent mappings.
+- Sends UDP requests to a local echo server and waits for matching replies.
+- Exercises 16, 64, 256, 512, and 1,024 concurrent mappings.
 - Repeats mapping creation and TCP-client disconnect cleanup three times.
+- Runs the mapping workload once with ASan/UBSan enabled, then again with a
+  separate non-sanitized Release binary for representative RSS measurements.
+- Uses the existing UDPGW default `udp_mtu=65520`, rather than a reduced test MTU.
 
 ## Run locally
+
+Instrumented build and sanitizer tests:
 
     cmake -S . -B build-wp4 -DBUILD_NOTHING_BY_DEFAULT=ON \
       -DBUILD_TESTS=ON -DBUILD_UDPGW=ON \
@@ -24,23 +29,39 @@ modified.
       "-DCMAKE_EXE_LINKER_FLAGS=-fsanitize=address,undefined"
     cmake --build build-wp4 --parallel 2 --target badvpn-udpgw chunkbuffer2_test
     build-wp4/tests/chunkbuffer2_test
+    python3 -m py_compile tests/udpgw-memory-ramp/memory_ramp.py
+    python3 tests/udpgw-memory-ramp/test_memory_ramp.py -v
     UDPGW_BIN="$PWD/build-wp4/udpgw/badvpn-udpgw" \
-      python3 tests/udpgw-memory-ramp/memory_ramp.py
+      python3 tests/udpgw-memory-ramp/memory_ramp.py \
+      --udp-mtu 65520 --artifact-dir wp4-artifacts/sanitizer \
+      --output wp4-artifacts/sanitizer/memory-ramp.json
+
+Non-sanitized Release build for RSS measurements:
+
+    cmake -S . -B build-wp4-memory -DBUILD_NOTHING_BY_DEFAULT=ON \
+      -DBUILD_TESTS=OFF -DBUILD_UDPGW=ON -DCMAKE_BUILD_TYPE=Release
+    cmake --build build-wp4-memory --parallel 2 --target badvpn-udpgw
+    UDPGW_BIN="$PWD/build-wp4-memory/udpgw/badvpn-udpgw" \
+      python3 tests/udpgw-memory-ramp/memory_ramp.py \
+      --udp-mtu 65520 --artifact-dir wp4-artifacts/memory \
+      --output wp4-artifacts/memory/memory-ramp.json
 
 ## Interpretation and limits
 
-- RSS and FD values are read from Linux `/proc/<pid>`; they are host/runtime
-  measurements, not static allocation estimates.
+- RSS and FD values are read from Linux `/proc/<pid>`; production-style memory
+  figures must come from the non-sanitized Release run. ASan's allocator and
+  quarantine materially change RSS.
 - Each ramp level represents mappings opened concurrently on one TCP client.
-- Each mapping is verified by an echoed UDP datagram before the next level.
+- Each mapping is checked by an echoed UDP datagram before the next level.
 - The 16-bit connection ID range caps unique IDs at 65,536 per TCP client;
   this test deliberately measures only through 1,024.
 - RSS after client disconnect is reported, but allocator retention may keep
   RSS above the original baseline even when mapping FDs are released.
-- A clean sanitizer log only applies to the exercised code paths and test
-  workload. It is not a proof of absence of all memory defects.
+- A clean sanitizer log applies only to the exercised code paths and workload;
+  it is not proof of absence of all memory defects.
 - This workflow does not measure Android, Cloud Run, carrier-network, or
   10k-100k mapping capacity. Larger ramp stages follow after this baseline
   memory profile is validated.
 
-The CI artifact contains the JSON measurements and the full UDPGW runtime log.
+The CI artifact contains separate sanitizer and non-sanitized JSON measurements
+plus the UDPGW runtime logs.
