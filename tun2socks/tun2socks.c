@@ -347,7 +347,7 @@ int detect_udpgw_client_memory_budget (uint64_t *budget)
             read_memory_value("/sys/fs/cgroup/memory/memory.usage_in_bytes", &used);
     }
 
-    if (have_cgroup && limit > 0) {
+    if (have_cgroup && limit > 0 && limit < (1ULL << 60)) {
         uint64_t available = limit > used ? limit - used : 0;
         uint64_t reserve = limit / 4;
         const uint64_t minimum_reserve = 64ULL * 1024ULL * 1024ULL;
