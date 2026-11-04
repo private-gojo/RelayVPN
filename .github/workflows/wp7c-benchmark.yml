@@ -1,0 +1,214 @@
+name: WP7-C - C/Rust UDPGW benchmark
+
+on:
+  push:
+    branches:
+      - work/wp7c-go-badvpn-compatible-20261104
+    paths:
+      - "tests/udpgw-bench/**"
+      - ".github/workflows/wp7c-benchmark.yml"
+      - "impl/rust/upstream/**"
+      - "udpgw/**"
+      - "protocol/**"
+      - "flow/**"
+      - "base/**"
+      - "system/**"
+  workflow_dispatch:
+    inputs:
+      profile:
+        description: Benchmark profile
+        required: true
+        default: smoke
+        type: choice
+        options:
+          - smoke
+          - full
+          - ramp
+
+permissions:
+  contents: read
+
+concurrency:
+  group: wp7c-benchmark-${{ github.sha }}
+  cancel-in-progress: false
+
+jobs:
+  benchmark:
+    name: Sequential C/Rust UDPGW benchmark
+    runs-on: ubuntu-24.04
+    timeout-minutes: 360
+    env:
+      PROFILE: ${{ inputs.profile || 'smoke' }}
+    steps:
+      - name: Checkout WP7-C
+        uses: actions/checkout@v4
+
+      - name: Install build and runtime tools
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y build-essential cmake python3 iproute2 procps util-linux
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Record hardware, kernel, and resource limits
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p wp7c-benchmark-reports
+          {
+            echo "profile=$PROFILE"
+            echo "run_id=$GITHUB_RUN_ID"
+            echo "commit=$GITHUB_SHA"
+            echo "runner_os=$RUNNER_OS"
+            echo "runner_arch=$RUNNER_ARCH"
+            echo "runner_environment=$RUNNER_ENVIRONMENT"
+            echo "image_os=${ImageOS:-unknown}"
+            echo "image_version=${ImageVersion:-unknown}"
+            echo "nproc=$(nproc)"
+            echo "kernel=$(uname -a)"
+            echo "machine=$(uname -m)"
+            echo "nofile_soft=$(ulimit -Sn)"
+            echo "nofile_hard=$(ulimit -Hn)"
+            echo "ephemeral_ports=$(cat /proc/sys/net/ipv4/ip_local_port_range)"
+            echo "cgroup_v2_cpu_max=$(cat /sys/fs/cgroup/cpu.max 2>/dev/null || echo unavailable)"
+            echo "cgroup_v2_cpuset=$(cat /sys/fs/cgroup/cpuset.cpus.effective 2>/dev/null || echo unavailable)"
+            lscpu
+            cat /etc/os-release
+          } | tee wp7c-benchmark-reports/system-info.txt
+
+      - name: Build unchanged C reference
+        run: |
+          set -euo pipefail
+          BUILD_DIR="$RUNNER_TEMP/wp7c-bench-c"
+          cmake -S . -B "$BUILD_DIR" \
+            -G "Unix Makefiles" \
+            -DBUILD_NOTHING_BY_DEFAULT=ON \
+            -DBUILD_UDPGW=ON
+          cmake --build "$BUILD_DIR" --parallel 2 --target badvpn-udpgw
+          test -x "$BUILD_DIR/udpgw/badvpn-udpgw"
+          echo "C_BIN=$BUILD_DIR/udpgw/badvpn-udpgw" >> "$GITHUB_ENV"
+
+      - name: Build and validate pinned Rust reference candidate
+        run: |
+          set -euo pipefail
+          MANIFEST=impl/rust/upstream/Cargo.toml
+          cargo fmt --manifest-path "$MANIFEST" --check
+          cargo clippy --locked --manifest-path "$MANIFEST" --all-targets -- -D warnings
+          cargo test --locked --manifest-path "$MANIFEST"
+          cargo build --locked --manifest-path "$MANIFEST" --release
+          RUST_BIN="$GITHUB_WORKSPACE/impl/rust/upstream/target/release/badvpn-udpgw"
+          test -x "$RUST_BIN"
+          echo "RUST_BIN=$RUST_BIN" >> "$GITHUB_ENV"
+
+      - name: Build independent UDP echo target and validate harness
+        run: |
+          set -euo pipefail
+          cc -O3 -Wall -Wextra -Werror \
+            tests/udpgw-bench/echo_target.c \
+            -o "$RUNNER_TEMP/udpgw-echo"
+          python3 -m py_compile tests/udpgw-bench/*.py
+          echo "ECHO_BIN=$RUNNER_TEMP/udpgw-echo" >> "$GITHUB_ENV"
+
+      - name: Smoke matrix - C
+        if: github.event_name == 'push' || inputs.profile == 'smoke'
+        run: |
+          set -euo pipefail
+          for direction in up down bidi; do
+            python3 tests/udpgw-bench/load.py \
+              --engine c --engine-bin "$C_BIN" --echo-bin "$ECHO_BIN" \
+              --flows 16 --clients 4 --payload-size 64 \
+              --direction "$direction" --duration 2 \
+              --workers 2 \
+              --output "wp7c-benchmark-reports/smoke-c-$direction.json"
+          done
+
+      - name: Smoke matrix - Rust
+        if: github.event_name == 'push' || inputs.profile == 'smoke'
+        run: |
+          set -euo pipefail
+          for direction in up down bidi; do
+            python3 tests/udpgw-bench/load.py \
+              --engine rust --engine-bin "$RUST_BIN" --echo-bin "$ECHO_BIN" \
+              --flows 16 --clients 4 --payload-size 64 \
+              --direction "$direction" --duration 2 \
+              --workers 2 \
+              --output "wp7c-benchmark-reports/smoke-rust-$direction.json"
+          done
+
+      - name: Prepare expanded benchmark resource envelope
+        if: inputs.profile == 'full' || inputs.profile == 'ramp'
+        shell: bash
+        run: |
+          set -euo pipefail
+          if ! ulimit -n 131072; then
+            echo "Unable to raise RLIMIT_NOFILE to 131072; current limit will be recorded." | tee -a wp7c-benchmark-reports/resource-warnings.txt
+          fi
+          sudo sysctl -w net.ipv4.ip_local_port_range="1024 65535"
+          {
+            echo "nofile_soft=$(ulimit -Sn)"
+            echo "nofile_hard=$(ulimit -Hn)"
+            echo "ephemeral_ports=$(cat /proc/sys/net/ipv4/ip_local_port_range)"
+          } | tee wp7c-benchmark-reports/expanded-limits.txt
+
+      - name: Full three-run C matrix
+        if: inputs.profile == 'full'
+        run: |
+          set -euo pipefail
+          ulimit -n 131072 || echo "RLIMIT_NOFILE raise unavailable; using current limit"
+          python3 tests/udpgw-bench/matrix.py \
+            --engine c --engine-bin "$C_BIN" --echo-bin "$ECHO_BIN" \
+            --duration 5 --repeats 3 --workers 4 \
+            --output wp7c-benchmark-reports/c-matrix.json
+
+      - name: Full three-run Rust matrix
+        if: inputs.profile == 'full'
+        run: |
+          set -euo pipefail
+          ulimit -n 131072 || echo "RLIMIT_NOFILE raise unavailable; using current limit"
+          python3 tests/udpgw-bench/matrix.py \
+            --engine rust --engine-bin "$RUST_BIN" --echo-bin "$ECHO_BIN" \
+            --duration 5 --repeats 3 --workers 4 \
+            --output wp7c-benchmark-reports/rust-matrix.json
+
+      - name: C active-flow capacity ramp
+        if: inputs.profile == 'ramp'
+        shell: bash
+        run: |
+          set -euo pipefail
+          ulimit -n 131072 || echo "RLIMIT_NOFILE raise unavailable; using current limit"
+          set +e
+          python3 tests/udpgw-bench/ramp.py \
+            --engine c --engine-bin "$C_BIN" --echo-bin "$ECHO_BIN" \
+            --clients 64 --duration 2 --workers 4 \
+            --output wp7c-benchmark-reports/c-ramp.json
+          STATUS=$?
+          set -e
+          echo "C ramp exit=$STATUS (a resource-limited stop is captured in the report)"
+
+      - name: Rust active-flow capacity ramp
+        if: inputs.profile == 'ramp'
+        shell: bash
+        run: |
+          set -euo pipefail
+          ulimit -n 131072 || echo "RLIMIT_NOFILE raise unavailable; using current limit"
+          set +e
+          python3 tests/udpgw-bench/ramp.py \
+            --engine rust --engine-bin "$RUST_BIN" --echo-bin "$ECHO_BIN" \
+            --clients 64 --duration 2 --workers 4 \
+            --output wp7c-benchmark-reports/rust-ramp.json
+          STATUS=$?
+          set -e
+          echo "Rust ramp exit=$STATUS (a resource-limited stop is captured in the report)"
+
+      - name: Upload benchmark reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: relayvpn-wp7c-benchmark-${{ github.run_id }}
+          path: wp7c-benchmark-reports/
+          if-no-files-found: warn
+          retention-days: 30

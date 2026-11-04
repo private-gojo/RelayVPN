@@ -135,14 +135,14 @@ int main(int argc, char **argv) {
     uint64_t probe_count = 0, echo_tx = 0, down_tx = 0, send_errors = 0;
     uint64_t down_seq = 0, next_due = mono_ns();
     uint32_t next_peer = 0;
-    int active_peers = 0;
+    int active_peers = 0, down_started = 0;
 
     printf("READY %u\n", (unsigned)ntohs(bind_addr.sin_port));
     fflush(stdout);
 
     while (!stopping) {
         struct pollfd pfd = {.fd = fd, .events = POLLIN};
-        int timeout = (mode == 2 && active_peers > 0 && rate_pps == 0) ? 0 : 10;
+        int timeout = (mode == 2 && down_started && active_peers > 0 && rate_pps == 0) ? 0 : 10;
         int pr = poll(&pfd, 1, timeout);
         if (pr < 0 && errno != EINTR) { perror("poll"); break; }
 
@@ -182,7 +182,7 @@ int main(int argc, char **argv) {
                         out_msg[out_count].msg_hdr.msg_name = &from[i];
                         out_msg[out_count].msg_hdr.msg_namelen = in_msg[i].msg_hdr.msg_namelen;
                         out_count++;
-                    } else if (kind == 'P') {
+                    } else if (kind == 'G') {\n                        down_started = 1;\n                    } else if (kind == 'P') {
                         probe_count++;
                         uint8_t *out = out_storage + (size_t)out_count * payload_size;
                         memcpy(out, pkt, len);
@@ -217,7 +217,7 @@ int main(int argc, char **argv) {
             } while (n == BATCH);
         }
 
-        if (mode == 2 && active_peers > 0) {
+        if (mode == 2 && down_started && active_peers > 0) {
             uint64_t now = mono_ns();
             int due = 0;
             if (rate_pps == 0) {

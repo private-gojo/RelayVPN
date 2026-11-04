@@ -71,10 +71,6 @@ async def read_frames(reader, state):
             elif kind == ord("D"):
                 state["down_packets"] += 1
                 state["down_bytes"] += len(payload)
-                state["down_latency_ns"].append(max(0, now_ns - sent_ns))
-                started = state["data_pending"].pop(seq, None)
-                if started is not None:
-                    state["data_rtt_ns"].append(now_ns - started)
     except (asyncio.IncompleteReadError, ConnectionError, OSError):
         state["reader_closed"] = True
 
@@ -111,8 +107,7 @@ async def produce_data(session, state, target, payload_size, stop_at):
             writer.write(make_packet(conid, target, payload))
             state["up_sent"] += 1
             if seq % 1000 == 0:
-                state["data_pending"][seq] = sent
-        await writer.drain()
+                    await writer.drain()
 
 
 async def keepalive_loop(session, stop_at):
@@ -157,9 +152,6 @@ async def worker_async(worker_id, sessions_spec, target, payload_size, direction
         "direct_pending": {},
         "tunnel_rtt_ns": {},
         "direct_rtt_ns": {},
-        "data_pending": {},
-        "data_rtt_ns": [],
-        "down_latency_ns": [],
         "down_packets": 0,
         "down_bytes": 0,
         "up_sent": 0,
@@ -202,6 +194,10 @@ async def worker_async(worker_id, sessions_spec, target, payload_size, direction
         })
 
         await asyncio.to_thread(start_event.wait)
+        loop = asyncio.get_running_loop()
+        if worker_id == 0 and direct_sock is not None:
+            gate = make_payload("G", 0, 0, time.monotonic_ns(), payload_size)
+            await loop.sock_sendto(direct_sock, gate, target[:2])
         start = time.monotonic()
         stop_at = start + duration
 
@@ -233,7 +229,6 @@ async def worker_async(worker_id, sessions_spec, target, payload_size, direction
             "down_bytes": state["down_bytes"],
             "tunnel_rtt_ns": state["tunnel_rtt_ns"],
             "direct_rtt_ns": state["direct_rtt_ns"],
-            "down_latency_ns": state["down_latency_ns"],
             "generator_cpu_seconds": time.process_time() - cpu_before_measure,
             "reader_closed": state["reader_closed"],
         })
@@ -427,6 +422,7 @@ def run_case(args):
         }
 
     server_after_setup = proc_snapshot(server_proc.pid)
+    target_after_setup = proc_snapshot(target_proc.pid)
     cpu_before_measure = server_after_setup
     start_event.set()
     for process in workers:
@@ -443,6 +439,7 @@ def run_case(args):
             results.append({"error": "worker result missing"})
 
     server_after = proc_snapshot(server_proc.pid)
+    target_after = proc_snapshot(target_proc.pid)
     target_proc.send_signal(signal.SIGTERM)
     try:
         target_proc.wait(timeout=5)
@@ -473,13 +470,19 @@ def run_case(args):
         rss_delta_kb = max(0, server_after_setup["rss_kb"] - server_before["rss_kb"])
     paired = summarize_latency(valid_results)
     generator_cpu = sum(float(item.get("generator_cpu_seconds", 0)) for item in valid_results)
+    target_cpu_delta = None
+    if target_after_setup["cpu_seconds"] is not None and target_after["cpu_seconds"] is not None:
+        target_cpu_delta = max(0.0, target_after["cpu_seconds"] - target_after_setup["cpu_seconds"])
 
     metrics = {
         "active_flows_requested": args.flows,
         "active_flows_confirmed": int(target_stats.get("active_flows", 0)),
         "max_flows_before_first_error": int(target_stats.get("active_flows", 0)),
+        "up_sent_frames": sum(int(item.get("up_sent", 0)) for item in valid_results),
         "up_packets": up_packets,
         "down_packets": down_packets,
+        "down_target_packets": int(target_stats.get("down_tx", 0)),
+        "down_target_send_errors": int(target_stats.get("send_errors", 0)),
         "up_pps": round(up_packets / args.duration, 2),
         "down_pps": round(down_packets / args.duration, 2),
         "up_mbps": round(up_packets * args.payload_size * 8 / args.duration / 1_000_000, 3),
@@ -496,6 +499,12 @@ def run_case(args):
             else round(rss_delta_kb * 1024 / max(1, int(target_stats.get("active_flows", 0))), 2)
         ),
         "generator_cpu_seconds": round(generator_cpu, 6),
+        "generator_cpu_util_percent_of_runner": round(generator_cpu / args.duration / max(1, os.cpu_count() or 1) * 100, 2),
+        "echo_target_cpu_seconds": None if target_cpu_delta is None else round(target_cpu_delta, 6),
+        "echo_target_cpu_util_percent_of_runner": (
+            None if target_cpu_delta is None
+            else round(target_cpu_delta / args.duration / max(1, os.cpu_count() or 1) * 100, 2)
+        ),
         **paired,
     }
     try:
@@ -509,7 +518,7 @@ def run_case(args):
         pass
 
     return {
-        "status": "ok" if metrics["active_flows_confirmed"] == args.flows and not any("error" in x for x in results) else "partial",
+        "status": "ok" if metrics["active_flows_confirmed"] == args.flows and metrics["down_target_send_errors"] == 0 and not any("error" in x or x.get("reader_closed") for x in results) else "partial",
         "case": {
             "engine": args.engine,
             "engine_bin": args.engine_bin,
