@@ -30,7 +30,7 @@
 // maxiumum listen addresses
 #define MAX_LISTEN_ADDRS 16
 
-// maximum datagram size
+// Maximum UDP payload buffer; the client selects its actual MTU from the TUN device.
 #define DEFAULT_UDP_MTU 65520
 
 // connection buffer size for sending to client, in packets
@@ -39,7 +39,7 @@
 // connection buffer size for sending to UDP, in packets
 #define CONNECTION_UDP_BUFFER_SIZE 1
 
-// maximum number of clients
+// Maximum simultaneous UDPGW TCP streams.
 #define DEFAULT_MAX_CLIENTS 1000
 
 // maximum connections for client
