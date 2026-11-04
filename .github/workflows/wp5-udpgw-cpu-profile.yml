@@ -1,0 +1,75 @@
+name: WP5 - UDPGW single-instance CPU profile
+
+on:
+  push:
+    branches:
+      - work/wp5-udpgw-cpu-profile-20261104
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: wp5-udpgw-cpu-profile
+  cancel-in-progress: false
+
+jobs:
+  cpu-profile:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout baseline-derived WP5 branch
+        uses: actions/checkout@v4
+
+      - name: Install build and test dependencies
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y build-essential cmake python3
+
+      - name: Build standalone UDPGW in Release mode
+        run: |
+          set -euo pipefail
+          cmake -S . -B "$RUNNER_TEMP/wp5-cpu-build" \
+            -G "Unix Makefiles" \
+            -DBUILD_NOTHING_BY_DEFAULT=ON \
+            -DBUILD_TESTS=OFF \
+            -DBUILD_UDPGW=ON \
+            -DCMAKE_BUILD_TYPE=Release
+          cmake --build "$RUNNER_TEMP/wp5-cpu-build" \
+            --target badvpn-udpgw --parallel 2
+          test -x "$RUNNER_TEMP/wp5-cpu-build/udpgw/badvpn-udpgw"
+
+      - name: Validate profiler and protocol tests
+        run: |
+          set -euo pipefail
+          python3 -m py_compile \
+            tests/udpgw-cpu-profile/cpu_profile.py \
+            tests/udpgw-cpu-profile/test_cpu_profile.py
+          cd tests/udpgw-cpu-profile
+          python3 -m unittest -v
+
+      - name: Run sustained UDPGW CPU profile
+        run: |
+          set -euo pipefail
+          mkdir -p wp5-artifacts
+          UDPGW_BIN="$RUNNER_TEMP/wp5-cpu-build/udpgw/badvpn-udpgw" \
+            python3 tests/udpgw-cpu-profile/cpu_profile.py \
+              --mapping-levels 64,256,1024 \
+              --rates 2000,5000,10000,20000,40000 \
+              --duration 3 \
+              --payload-bytes 128 \
+              --batch-size 64 \
+              --max-connections 4096 \
+              --artifact-dir wp5-artifacts \
+              --output wp5-artifacts/cpu-profile.json
+
+      - name: Upload WP5 CPU profile
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: relayvpn-wp5-udpgw-cpu-profile
+          path: wp5-artifacts/
+          if-no-files-found: warn
+          retention-days: 30
