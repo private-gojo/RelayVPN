@@ -146,8 +146,22 @@ def warm_mappings(client, mappings, target, payload_size, timeout):
                            (counter.count(0), mappings))
 
 
+def read_log_delta(log_path, offset):
+    counts = collections.Counter()
+    try:
+        with open(log_path, "r", encoding="utf-8", errors="replace") as stream:
+            stream.seek(offset)
+            content = stream.read()
+            new_offset = stream.tell()
+        counts["out_of_client_buffer"] = content.count("out of client buffer")
+        counts["out_of_udp_buffer"] = content.count("out of UDP buffer")
+    except OSError:
+        new_offset = offset
+    return new_offset, dict(counts)
+
+
 def run_rate(process, client, echo, counter, mappings, rate, trial,
-             duration, payload_size, batch_size, settle_timeout):
+             duration, payload_size, batch_size, settle_timeout, log_path, log_offset):
     stop = threading.Event()
     sent = [0]
     send_error = [None]
@@ -189,51 +203,71 @@ def run_rate(process, client, echo, counter, mappings, rate, trial,
         worker.join(timeout=0.05)
     stop.set()
     worker.join(timeout=2)
-    end_wall = time.monotonic()
-    server_end = read_cpu_ticks(process.pid)
-    echo_end = read_cpu_ticks(echo.process.pid)
-    load_end = read_cpu_ticks(os.getpid())
-    elapsed = max(end_wall - start_wall, 0.001)
+    active_end_wall = time.monotonic()
+    server_active_end = read_cpu_ticks(process.pid)
+    echo_active_end = read_cpu_ticks(echo.process.pid)
+    load_active_end = read_cpu_ticks(os.getpid())
+    active_elapsed = max(active_end_wall - start_wall, 0.001)
 
     drain_deadline = time.monotonic() + settle_timeout
     while counter.count(trial) < sent[0] and time.monotonic() < drain_deadline:
         time.sleep(0.02)
 
+    total_end_wall = time.monotonic()
+    server_total_end = read_cpu_ticks(process.pid)
+    echo_total_end = read_cpu_ticks(echo.process.pid)
+    load_total_end = read_cpu_ticks(os.getpid())
+    total_elapsed = max(total_end_wall - start_wall, 0.001)
+
     hz = os.sysconf("SC_CLK_TCK")
-    server_cpu_seconds = ((server_end[0] + server_end[1]) -
-                          (server_start[0] + server_start[1])) / hz
-    echo_cpu_seconds = ((echo_end[0] + echo_end[1]) -
-                        (echo_start[0] + echo_start[1])) / hz
-    harness_cpu_seconds = ((load_end[0] + load_end[1]) -
-                           (load_start[0] + load_start[1])) / hz
+    def cpu_delta(start, end):
+        return ((end[0] + end[1]) - (start[0] + start[1])) / hz
+
+    server_active_cpu = cpu_delta(server_start, server_active_end)
+    server_total_cpu = cpu_delta(server_start, server_total_end)
+    echo_active_cpu = cpu_delta(echo_start, echo_active_end)
+    echo_total_cpu = cpu_delta(echo_start, echo_total_end)
+    harness_active_cpu = cpu_delta(load_start, load_active_end)
+    harness_total_cpu = cpu_delta(load_start, load_total_end)
     echoed = counter.count(trial)
     malformed, trailing = counter.snapshot()[1:]
+    log_offset, log_errors = read_log_delta(log_path, log_offset)
     metrics = process_metrics(process.pid)
-    return {
+    result = {
         "trial": trial,
         "offered_rate_pps": rate,
-        "duration_seconds": round(elapsed, 4),
+        "active_load_elapsed_seconds": round(active_elapsed, 4),
+        "completion_elapsed_seconds": round(total_elapsed, 4),
+        "drain_elapsed_seconds": round(max(0.0, total_elapsed - active_elapsed), 4),
         "mappings": mappings,
         "payload_bytes": payload_size,
         "sent_datagrams": sent[0],
         "tcp_echoes_received": echoed,
-        "sent_pps": round(sent[0] / elapsed, 2),
-        "echoed_pps": round(echoed / elapsed, 2),
+        "sent_pps": round(sent[0] / active_elapsed, 2),
+        "echoed_pps_during_load_window": round(echoed / active_elapsed, 2),
         "echo_completion_ratio": round(echoed / sent[0], 5) if sent[0] else 0,
-        "server_cpu_seconds": round(server_cpu_seconds, 4),
-        "server_one_core_cpu_percent": round(100 * server_cpu_seconds / elapsed, 2),
+        "server_active_cpu_seconds": round(server_active_cpu, 4),
+        "server_active_one_core_cpu_percent": round(100 * server_active_cpu / active_elapsed, 2),
+        "server_total_cpu_seconds": round(server_total_cpu, 4),
+        "server_total_one_core_cpu_percent": round(100 * server_total_cpu / total_elapsed, 2),
         "server_cpu_microseconds_per_echo": (
-            round(server_cpu_seconds * 1_000_000 / echoed, 3) if echoed else None
+            round(server_total_cpu * 1_000_000 / echoed, 3) if echoed else None
         ),
-        "echo_server_cpu_seconds": round(echo_cpu_seconds, 4),
-        "echo_server_one_core_cpu_percent": round(100 * echo_cpu_seconds / elapsed, 2),
-        "harness_process_cpu_seconds": round(harness_cpu_seconds, 4),
-        "harness_one_core_cpu_percent": round(100 * harness_cpu_seconds / elapsed, 2),
+        "echo_server_active_cpu_seconds": round(echo_active_cpu, 4),
+        "echo_server_active_one_core_cpu_percent": round(100 * echo_active_cpu / active_elapsed, 2),
+        "echo_server_total_cpu_seconds": round(echo_total_cpu, 4),
+        "echo_server_total_one_core_cpu_percent": round(100 * echo_total_cpu / total_elapsed, 2),
+        "harness_active_cpu_seconds": round(harness_active_cpu, 4),
+        "harness_active_one_core_cpu_percent": round(100 * harness_active_cpu / active_elapsed, 2),
+        "harness_total_cpu_seconds": round(harness_total_cpu, 4),
+        "harness_total_one_core_cpu_percent": round(100 * harness_total_cpu / total_elapsed, 2),
         "server_process": metrics,
+        "buffer_errors": log_errors,
         "send_error": send_error[0],
         "malformed_frames": malformed,
         "trailing_frame_bytes": trailing,
     }
+    return result, log_offset
 
 
 def run_profile(args):
@@ -281,12 +315,14 @@ def run_profile(args):
 
             reader_thread = threading.Thread(target=reader, daemon=True)
             reader_thread.start()
+            log_offset = os.path.getsize(log_path)
             for rate in args.rates:
-                results.append(run_rate(
+                result, log_offset = run_rate(
                     process, client, echo, counter, mappings, rate, trial,
                     args.duration, args.payload_bytes, args.batch_size,
-                    args.settle_timeout
-                ))
+                    args.settle_timeout, log_path, log_offset
+                )
+                results.append(result)
                 if process.poll() is not None:
                     raise RuntimeError("UDPGW exited during CPU profile")
                 trial += 1
