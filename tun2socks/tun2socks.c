@@ -372,7 +372,7 @@ int main (int argc, char **argv)
     udp_mtu = BTap_GetMTU(&device) - (int)(sizeof(struct ipv4_header) + sizeof(struct udp_header));
     if (options.netif_ip6addr) {
         int udp_ip6_mtu = BTap_GetMTU(&device) - (int)(sizeof(struct ipv6_header) + sizeof(struct udp_header));
-        if (udp_mtu < udp_ip6_mtu) {
+        if (udp_mtu > udp_ip6_mtu) {
             udp_mtu = udp_ip6_mtu;
         }
     }
@@ -391,7 +391,7 @@ int main (int argc, char **argv)
         }
         
         // init udpgw client
-        if (!SocksUdpGwClient_Init(&udpgw_client, udp_mtu, DEFAULT_UDPGW_MAX_CONNECTIONS,
+        if (!SocksUdpGwClient_Init(&udpgw_client, udp_mtu, options.udpgw_max_connections,
             options.udpgw_connection_buffer_size, UDPGW_KEEPALIVE_TIME, socks_server_addr,
             socks_auth_info, socks_num_auth_info, udpgw_remote_server_addr,
             UDPGW_RECONNECT_TIME, &ss, NULL, udp_send_packet_to_device))
@@ -403,7 +403,7 @@ int main (int argc, char **argv)
         udp_mode = UdpModeSocks;
 
         // init SOCKS UDP client
-        SocksUdpClient_Init(&socks_udp_client, udp_mtu, DEFAULT_UDPGW_MAX_CONNECTIONS,
+        SocksUdpClient_Init(&socks_udp_client, udp_mtu, options.udpgw_max_connections,
             SOCKS_UDP_SEND_BUFFER_PACKETS, UDPGW_KEEPALIVE_TIME, socks_server_addr,
             socks_auth_info, socks_num_auth_info, &ss, NULL, udp_send_packet_to_device);
     } else {
