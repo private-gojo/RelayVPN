@@ -73,3 +73,15 @@ Run #11 (GitHub Actions run \`41833302913\`, commit \`44764946bc2b21fdf2aea0204d
 At 1,024 mappings, run #11 again had UDPGW CPU near one core while the C echo helper used about 51–58% and the Python harness about 6–9%. The missing echo count closely matched the recorded \`out of client buffer\` events. Runs #9 and #10 were less loaded at 80k pps, so there is no stable CI-only safe threshold to publish. Across all three runs, 1,024 mappings at 100k pps consistently approached or reached one full UDPGW core; packet-buffer drops varied.
 
 Conclusion: the single-instance service is CPU-limited near the 80k–100k pps range for this 1,024-mapping loopback workload. A fixed capacity limit must not be inferred from these GitHub-hosted runner results; the same profile needs to run on the intended VPS/container. This is throughput in packets per second, not a mapping-count result.
+
+
+## Fourth-run repeat
+
+Run #12 (GitHub Actions run \`41833854305\`, commit \`f5cd3db3e0b75f1281070aea87c66fd85aad2cc0\`) passed the full profile again. At 1,024 active mappings:
+
+| Offered rate | UDPGW active CPU | Echo completion | Client-buffer errors | Drain time |
+|---:|---:|---:|---:|---:|
+| 80k pps | 81.33% | 100% | 0 | 0.040 s |
+| 100k pps | 95.65% | 99.759% | 693 | 2.009 s |
+
+At 100k pps the server used 2.87 CPU seconds during the 3-second load window (95.65% of one core); the echo helper used 50.33% and the harness 11.33%. The 80k-pps trial completed all 240,000 datagrams with no buffer errors. This fourth run reinforces the CPU saturation trend near 100k pps but also confirms that the exact clean-throughput boundary varies with runner contention and queueing.
