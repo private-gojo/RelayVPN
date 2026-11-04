@@ -60,31 +60,58 @@ jobs:
           python3 -m py_compile tests/udpgw-memory-ramp/memory_ramp.py
           python3 tests/udpgw-memory-ramp/test_memory_ramp.py -v
 
-      - name: Run live UDPGW mapping and memory ramp
+      - name: Run instrumented UDPGW mapping lifecycle
         run: |
           set -euo pipefail
-          mkdir -p wp4-artifacts
+          mkdir -p wp4-artifacts/sanitizer
           UDPGW_BIN="$RUNNER_TEMP/wp4-sanitizer-build/udpgw/badvpn-udpgw" \
             python3 tests/udpgw-memory-ramp/memory_ramp.py \
               --levels 16,64,256,512,1024 \
               --cycles 3 \
               --batch-size 32 \
               --max-connections 16384 \
-              --udp-mtu 1200 \
+              --udp-mtu 65520 \
               --reply-timeout 30 \
-              --artifact-dir wp4-artifacts \
-              --output wp4-artifacts/memory-ramp.json
+              --artifact-dir wp4-artifacts/sanitizer \
+              --output wp4-artifacts/sanitizer/memory-ramp.json
+
+      - name: Build non-sanitized Release UDPGW for memory measurement
+        run: |
+          set -euo pipefail
+          cmake -S . -B "$RUNNER_TEMP/wp4-memory-build" \
+            -G "Unix Makefiles" \
+            -DBUILD_NOTHING_BY_DEFAULT=ON \
+            -DBUILD_TESTS=OFF \
+            -DBUILD_UDPGW=ON \
+            -DCMAKE_BUILD_TYPE=Release
+          cmake --build "$RUNNER_TEMP/wp4-memory-build" \
+            --target badvpn-udpgw --parallel 2
+
+      - name: Measure non-sanitized UDPGW memory ramp
+        run: |
+          set -euo pipefail
+          mkdir -p wp4-artifacts/memory
+          UDPGW_BIN="$RUNNER_TEMP/wp4-memory-build/udpgw/badvpn-udpgw" \
+            python3 tests/udpgw-memory-ramp/memory_ramp.py \
+              --levels 16,64,256,512,1024 \
+              --cycles 3 \
+              --batch-size 32 \
+              --max-connections 16384 \
+              --udp-mtu 65520 \
+              --reply-timeout 30 \
+              --artifact-dir wp4-artifacts/memory \
+              --output wp4-artifacts/memory/memory-ramp.json
 
       - name: Reject sanitizer diagnostics
         if: always()
         run: |
           set -euo pipefail
-          if grep -En 'AddressSanitizer|LeakSanitizer|runtime error:' wp4-artifacts/udpgw-memory-ramp.log; then
+          if grep -En 'AddressSanitizer|LeakSanitizer|runtime error:' wp4-artifacts/sanitizer/udpgw-memory-ramp.log; then
             echo "Sanitizer diagnostic found in UDPGW runtime log" >&2
             exit 1
           fi
 
-      - name: Upload WP4 measurements and sanitizer log
+      - name: Upload WP4 measurements and sanitizer logs
         if: always()
         uses: actions/upload-artifact@v4
         with:
