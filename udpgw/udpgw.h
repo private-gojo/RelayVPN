@@ -31,7 +31,7 @@
 #define MAX_LISTEN_ADDRS 16
 
 // maximum datagram size
-#define DEFAULT_UDP_MTU 1472
+#define DEFAULT_UDP_MTU 65520
 
 // connection buffer size for sending to client, in packets
 #define CONNECTION_CLIENT_BUFFER_SIZE 1
@@ -40,7 +40,7 @@
 #define CONNECTION_UDP_BUFFER_SIZE 1
 
 // maximum number of clients
-#define DEFAULT_MAX_CLIENTS 3
+#define DEFAULT_MAX_CLIENTS 1000
 
 // maximum connections for client
 #define DEFAULT_MAX_CONNECTIONS_FOR_CLIENT 65536
