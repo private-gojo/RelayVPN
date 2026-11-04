@@ -1,0 +1,205 @@
+name: WP7-C - pinned Rust UDPGW integration and conformance
+
+on:
+  push:
+    branches:
+      - work/wp7c-go-badvpn-compatible-20261104
+    paths:
+      - "impl/rust/**"
+      - "docs/udpgw/WP7C-source-audit.md"
+      - ".github/workflows/wp7c-rust-vendor-conformance.yml"
+      - "tests/udpgw-conformance/**"
+      - "udpgw/**"
+      - "protocol/**"
+      - "flow/**"
+      - "base/**"
+      - "system/**"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: wp7c-rust-vendor-${{ github.sha }}
+  cancel-in-progress: false
+
+jobs:
+  conformance:
+    name: C and pinned Rust conformance
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    steps:
+      - name: Checkout WP7-C
+        uses: actions/checkout@v4
+
+      - name: Record runner and resource limits
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p wp7c-artifacts
+          {
+            echo "runner_os=$RUNNER_OS"
+            echo "runner_arch=$RUNNER_ARCH"
+            echo "runner_environment=$RUNNER_ENVIRONMENT"
+            echo "image_os=${ImageOS:-unknown}"
+            echo "image_version=${ImageVersion:-unknown}"
+            echo "nproc=$(nproc)"
+            echo "kernel=$(uname -a)"
+            echo "machine=$(uname -m)"
+            echo "nofile=$(ulimit -n)"
+            echo "ephemeral_ports=$(cat /proc/sys/net/ipv4/ip_local_port_range)"
+            echo "commit=$GITHUB_SHA"
+            cat /etc/os-release
+          } | tee wp7c-artifacts/system-info.txt
+
+      - name: Install C, Python, and networking tools
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y build-essential cmake python3 iproute2
+
+      - name: Install stable Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Validate and build pinned Rust source
+        run: |
+          set -euo pipefail
+          MANIFEST=impl/rust/upstream/Cargo.toml
+          cargo fmt --manifest-path "$MANIFEST" --check
+          cargo clippy --locked --manifest-path "$MANIFEST" --all-targets -- -D warnings
+          cargo test --locked --manifest-path "$MANIFEST"
+          cargo build --locked --manifest-path "$MANIFEST" --release
+          test -x impl/rust/upstream/target/release/badvpn-udpgw
+
+      - name: Build unchanged C reference
+        run: |
+          set -euo pipefail
+          BUILD_DIR="$RUNNER_TEMP/wp7c-c-build"
+          cmake -S . -B "$BUILD_DIR" \
+            -G "Unix Makefiles" \
+            -DBUILD_NOTHING_BY_DEFAULT=ON \
+            -DBUILD_UDPGW=ON
+          cmake --build "$BUILD_DIR" --parallel 2 --target badvpn-udpgw
+          test -x "$BUILD_DIR/udpgw/badvpn-udpgw"
+
+      - name: Run identical WP2 and WP6 conformance against C and Rust
+        shell: bash
+        run: |
+          set -euo pipefail
+          C_BIN="$RUNNER_TEMP/wp7c-c-build/udpgw/badvpn-udpgw"
+          RUST_BIN="$GITHUB_WORKSPACE/impl/rust/upstream/target/release/badvpn-udpgw"
+          RESOLV_BACKUP="$RUNNER_TEMP/wp7c-resolv.conf"
+          DNS_LOG="$GITHUB_WORKSPACE/wp7c-dns-stub.log"
+          sudo cp -L /etc/resolv.conf "$RESOLV_BACKUP"
+
+          cleanup() {
+            set +e
+            sudo pkill -f '[d]ns_stub.py' 2>/dev/null || true
+            sudo cp "$RESOLV_BACKUP" /etc/resolv.conf
+          }
+          trap cleanup EXIT
+
+          sudo sh -c 'printf "nameserver 127.0.0.1\\noptions timeout:1 attempts:1\\n" > /etc/resolv.conf'
+          sudo python3 tests/udpgw-conformance/dns_stub.py > "$DNS_LOG" 2>&1 &
+          DNS_PID=$!
+
+          for attempt in $(seq 1 30); do
+            if grep -q "listening on 127.0.0.1:53" "$DNS_LOG"; then
+              break
+            fi
+            if ! kill -0 "$DNS_PID" 2>/dev/null; then
+              cat "$DNS_LOG"
+              exit 1
+            fi
+            sleep 0.1
+          done
+          grep -q "listening on 127.0.0.1:53" "$DNS_LOG"
+
+          echo "===== C reference: WP2 + WP6 ====="
+          UDPGW_BIN="$C_BIN" \
+          UDPGW_DNS_TEST=1 \
+          UDPGW_EXPECT_OVERSIZE_FRAME_DISCONNECT=1 \
+          UDPGW_LOG_FILE="$GITHUB_WORKSPACE/wp7c-c-udpgw.log" \
+            python3 -m unittest discover -s tests/udpgw-conformance -p 'test_*.py' -v
+
+          echo "===== Pinned Rust: WP2 + WP6 ====="
+          UDPGW_BIN="$RUST_BIN" \
+          UDPGW_EXTRA_ARGS="--udp-idle-timeout 0" \
+          UDPGW_DNS_TEST=1 \
+          UDPGW_EXPECT_OVERSIZE_FRAME_DISCONNECT=0 \
+          UDPGW_LOG_FILE="$GITHUB_WORKSPACE/wp7c-rust-udpgw.log" \
+            python3 -m unittest discover -s tests/udpgw-conformance -p 'test_*.py' -v
+
+      - name: Upload conformance evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: relayvpn-wp7c-conformance
+          path: |
+            wp7c-artifacts/
+            wp7c-c-udpgw.log
+            wp7c-rust-udpgw.log
+            wp7c-dns-stub.log
+          if-no-files-found: warn
+          retention-days: 30
+
+  static-musl:
+    name: Static musl build (${{ matrix.target }})
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-24.04
+            target: x86_64-unknown-linux-musl
+            linker_env: CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER
+          - runner: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-musl
+            linker_env: CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER
+    steps:
+      - name: Checkout WP7-C
+        uses: actions/checkout@v4
+
+      - name: Record target runner
+        run: |
+          echo "target=${{ matrix.target }}"
+          echo "runner_arch=$RUNNER_ARCH"
+          echo "nproc=$(nproc)"
+          uname -a
+
+      - name: Install musl toolchain
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y musl-tools file binutils
+          echo "${{ matrix.linker_env }}=musl-gcc" >> "$GITHUB_ENV"
+
+      - name: Install Rust target
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Build static binary
+        run: |
+          set -euo pipefail
+          cargo build --locked --release \
+            --manifest-path impl/rust/upstream/Cargo.toml \
+            --target ${{ matrix.target }}
+          BIN="impl/rust/upstream/target/${{ matrix.target }}/release/badvpn-udpgw"
+          test -x "$BIN"
+          file "$BIN" | tee static-binary.txt
+          ! readelf -l "$BIN" | grep -q 'INTERP'
+          sha256sum "$BIN" | tee static-binary.sha256
+
+      - name: Upload static binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: badvpn-udpgw-${{ matrix.target }}
+          path: |
+            impl/rust/upstream/target/${{ matrix.target }}/release/badvpn-udpgw
+            static-binary.txt
+            static-binary.sha256
+          retention-days: 30
