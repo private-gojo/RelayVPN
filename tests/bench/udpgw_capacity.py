@@ -40,6 +40,18 @@ def process_memory(pid):
     return result
 
 
+def cgroup_memory_current():
+    for path in ("/sys/fs/cgroup/memory.current", "/sys/fs/cgroup/memory/memory.usage_in_bytes"):
+        try:
+            with open(path, "r", encoding="utf-8") as handle:
+                value = handle.read().strip()
+            if value.isdigit():
+                return int(value)
+        except OSError:
+            continue
+    return None
+
+
 def start_sink(stop_event, counter):
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
@@ -120,6 +132,8 @@ def main():
 
         time.sleep(0.5)
         baseline_fds = fd_count(args.server_pid)
+        baseline_process_memory = process_memory(args.server_pid)
+        baseline_cgroup_memory = cgroup_memory_current()
         payloads = [
             make_stream_payload(count, stream_index * MAX_IDS_PER_STREAM)
             for stream_index, count in enumerate(stream_sizes)
@@ -150,6 +164,13 @@ def main():
         elapsed = time.monotonic() - start
         fd_delta = max(0, observed_fds - baseline_fds)
         memory = process_memory(args.server_pid)
+        cgroup_memory_after = cgroup_memory_current()
+        rss_delta = None
+        if memory["rss_bytes"] is not None and baseline_process_memory["rss_bytes"] is not None:
+            rss_delta = max(0, memory["rss_bytes"] - baseline_process_memory["rss_bytes"])
+        cgroup_memory_delta = None
+        if cgroup_memory_after is not None and baseline_cgroup_memory is not None:
+            cgroup_memory_delta = max(0, cgroup_memory_after - baseline_cgroup_memory)
         result = {
             "requested_mappings": args.target,
             "runtime_capacity": server_capacity,
@@ -160,6 +181,12 @@ def main():
             "observed_server_fd_delta": fd_delta,
             "mapping_fd_target_reached": fd_delta >= target,
             "elapsed_seconds": round(elapsed, 3),
+            "baseline_rss_bytes": baseline_process_memory["rss_bytes"],
+            "rss_delta_bytes": rss_delta,
+            "rss_delta_bytes_per_mapping": round(rss_delta / fd_delta, 2) if rss_delta is not None and fd_delta else None,
+            "baseline_cgroup_memory_bytes": baseline_cgroup_memory,
+            "cgroup_memory_delta_bytes": cgroup_memory_delta,
+            "cgroup_memory_delta_bytes_per_mapping": round(cgroup_memory_delta / fd_delta, 2) if cgroup_memory_delta is not None and fd_delta else None,
             "datagrams_received_by_sink": datagram_count[0],
             **memory,
         }
