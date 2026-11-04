@@ -251,6 +251,10 @@ jobs:
           set -e
           echo "tun2socks_exit_status=$TUN_STATUS"
           echo "udpgw_exit_status=$UDPGW_STATUS"
+          if [[ "$TUN_STATUS" -ne 0 ]]; then
+            echo "tun2socks did not exit cleanly on SIGTERM" >&2
+            exit 1
+          fi
           if [[ "$UDPGW_STATUS" -ne 0 ]]; then
             echo "UDPGW did not exit cleanly on SIGTERM" >&2
             exit 1
@@ -263,9 +267,9 @@ jobs:
             echo "tun0 still exists after BadVPN exit" >&2
             exit 1
           fi
-          if pgrep -x badvpn-tun2socks >/dev/null || pgrep -x badvpn-udpgw >/dev/null; then
+          if pgrep -f '[b]advpn-(tun2socks|udpgw)' >/dev/null; then
             echo "Orphan BadVPN process remains" >&2
-            pgrep -a -f 'badvpn-(tun2socks|udpgw)' || true
+            pgrep -a -f '[b]advpn-(tun2socks|udpgw)' || true
             exit 1
           fi
           echo 'PASS: TCP and UDPGW runtime, TUN cleanup, no orphan BadVPN processes'
