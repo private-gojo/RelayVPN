@@ -384,7 +384,7 @@ int count_open_fds (void)
         char *end = NULL;
         errno = 0;
         (void)strtol(entry->d_name, &end, 10);
-        if (!errno && end != entry->d_name && *end == '\\0') {
+        if (!errno && end != entry->d_name && *end == '\0') {
             count++;
         }
     }
@@ -477,7 +477,7 @@ int parse_integer_argument (const char *value, int min_value, int max_value, int
     errno = 0;
     char *end = NULL;
     long parsed = strtol(value, &end, 10);
-    if (errno == ERANGE || end == value || *end != '\\0' ||
+    if (errno == ERANGE || end == value || *end != '\0' ||
         parsed < min_value || parsed > max_value) {
         return 0;
     }
@@ -674,22 +674,22 @@ int parse_arguments (int argc, char *argv[])
         }
         else if (!strcmp(arg, "--max-total-connections")) {
             if (1 >= argc - i) {
-                fprintf(stderr, "%s: requires an argument\\n", arg);
+                fprintf(stderr, "%s: requires an argument\n", arg);
                 return 0;
             }
             if (!parse_integer_argument(argv[i + 1], 1, 100000, &options.max_total_connections)) {
-                fprintf(stderr, "%s: expected a value from 1 to 100000\\n", arg);
+                fprintf(stderr, "%s: expected a value from 1 to 100000\n", arg);
                 return 0;
             }
             i++;
         }
         else if (!strcmp(arg, "--fd-limit")) {
             if (1 >= argc - i) {
-                fprintf(stderr, "%s: requires an argument\\n", arg);
+                fprintf(stderr, "%s: requires an argument\n", arg);
                 return 0;
             }
             if (!parse_integer_argument(argv[i + 1], 8192, 262144, &options.fd_limit)) {
-                fprintf(stderr, "%s: expected a value from 8192 to 262144\\n", arg);
+                fprintf(stderr, "%s: expected a value from 8192 to 262144\n", arg);
                 return 0;
             }
             i++;
@@ -743,7 +743,7 @@ int parse_arguments (int argc, char *argv[])
     }
 
     if (options.num_listen_addrs == 0) {
-        fprintf(stderr, "at least one --listen-addr is required\\n");
+        fprintf(stderr, "at least one --listen-addr is required\n");
         return 0;
     }
     
