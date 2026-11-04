@@ -186,6 +186,7 @@ jobs:
             --netif-netmask 255.255.255.0 \
             --socks-server-addr 10.200.0.1:1080 \
             --udpgw-remote-server-addr 10.200.0.1:7300 \
+            --udpgw-max-connections 100000 \
             --loglevel debug > "$ROOT/tun2socks.log" 2>&1 &
           TUN_PID=$!
           for i in $(seq 1 30); do
@@ -194,6 +195,18 @@ jobs:
             sleep 1
           done
           sudo ip -n cli link show tun0
+          for i in $(seq 1 30); do
+            STREAM_UP_COUNT=$(grep -c 'SOCKS up' "$ROOT/tun2socks.log" || true)
+            if [[ "$STREAM_UP_COUNT" -ge 2 ]]; then break; fi
+            sleep 1
+          done
+          grep -q 'UDPGW capacity: requested=100000 streams=2 per_stream=50000' "$ROOT/tun2socks.log"
+          if [[ "$STREAM_UP_COUNT" -lt 2 ]]; then
+            echo "Expected two independent UDPGW SOCKS streams, got $STREAM_UP_COUNT" >&2
+            cat "$ROOT/tun2socks.log"
+            exit 1
+          fi
+          echo "PASS: UDPGW client sharded 100k target across $STREAM_UP_COUNT independent streams"
           sudo ip -n cli link set tun0 up
           sudo ip -n cli route add default dev tun0
 
