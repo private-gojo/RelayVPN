@@ -588,14 +588,18 @@ int main (int argc, char **argv)
         if (num_udpgw_clients > UDPGW_MAX_STREAMS) {
             num_udpgw_clients = UDPGW_MAX_STREAMS;
         }
-        int per_stream_capacity = (effective_client_capacity + num_udpgw_clients - 1) / num_udpgw_clients;
+        int per_stream_capacity = effective_client_capacity / num_udpgw_clients;
+        int stream_capacity_remainder = effective_client_capacity % num_udpgw_clients;
 
-        BLog(BLOG_NOTICE, "UDPGW capacity: requested=%d effective=%d streams=%d per_stream=%d",
-             options.udpgw_max_connections, effective_client_capacity, num_udpgw_clients, per_stream_capacity);
+        BLog(BLOG_NOTICE, "UDPGW capacity: requested=%d effective=%d streams=%d per_stream=%d remainder=%d",
+             options.udpgw_max_connections, effective_client_capacity, num_udpgw_clients,
+             per_stream_capacity, stream_capacity_remainder);
 
         int initialized_streams = 0;
         while (initialized_streams < num_udpgw_clients) {
-            if (!SocksUdpGwClient_Init(&udpgw_clients[initialized_streams], udp_mtu, per_stream_capacity,
+            int stream_capacity = per_stream_capacity +
+                (initialized_streams < stream_capacity_remainder ? 1 : 0);
+            if (!SocksUdpGwClient_Init(&udpgw_clients[initialized_streams], udp_mtu, stream_capacity,
                 options.udpgw_connection_buffer_size, UDPGW_KEEPALIVE_TIME, socks_server_addr,
                 socks_auth_info, socks_num_auth_info, udpgw_remote_server_addr,
                 UDPGW_RECONNECT_TIME, &ss, NULL, udp_send_packet_to_device))
