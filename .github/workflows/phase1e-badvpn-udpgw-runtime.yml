@@ -53,6 +53,7 @@ jobs:
           TUN="$RUNNER_TEMP/relayvpn-phase1e-build/tun2socks/badvpn-tun2socks"
 
           "$UDPGW" --help > "$RUNNER_TEMP/udpgw-help.txt"
+          "$UDPGW" --listen-addr 127.0.0.1:7300 --udp-mtu 65520 --help >/dev/null
           grep -q -- '--max-total-connections' "$RUNNER_TEMP/udpgw-help.txt"
           grep -q -- '--fd-limit' "$RUNNER_TEMP/udpgw-help.txt"
           "$TUN" --udpgw-max-connections 100000 --help >/dev/null
@@ -265,6 +266,7 @@ jobs:
           grep -E 'capacity:|entering event loop' "$ROOT/logs/udpgw.log"
           grep -q 'effective_mappings=' "$ROOT/logs/udpgw.log"
           grep -q 'reserve=1064' "$ROOT/logs/udpgw.log"
+          grep -Eq 'bytes_per_mapping=([3-9][0-9]{5}|[1-9][0-9]{6,})' "$ROOT/logs/udpgw.log"
           tail -n 100 "$ROOT/logs/udpgw.log"
           echo '--- SSH dynamic-forward evidence ---'
           grep -E 'Authenticated to|Local forwarding listening|dynamic request|channel [0-9]+: new' "$ROOT/logs/ssh-client.log" | tail -n 30 || true
