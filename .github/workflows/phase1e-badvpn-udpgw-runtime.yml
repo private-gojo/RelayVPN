@@ -57,6 +57,16 @@ jobs:
           grep -q -- '--max-total-connections' "$RUNNER_TEMP/udpgw-help.txt"
           grep -q -- '--fd-limit' "$RUNNER_TEMP/udpgw-help.txt"
           "$TUN" --udpgw-max-connections 100000 --help >/dev/null
+          "$TUN" --udpgw-connection-buffer-size 128 --help >/dev/null
+
+          if "$TUN" --udpgw-connection-buffer-size 0 --help >/dev/null 2>&1; then
+            echo "tun2socks accepted a zero UDPGW connection buffer" >&2
+            exit 1
+          fi
+          if "$TUN" --udpgw-connection-buffer-size 129 --help >/dev/null 2>&1; then
+            echo "tun2socks accepted a UDPGW connection buffer above 128 packets" >&2
+            exit 1
+          fi
 
           if "$UDPGW" --listen-addr 127.0.0.1:7300 --fd-limit 8191 >/dev/null 2>&1; then
             echo "UDPGW accepted an FD target below 8192" >&2
