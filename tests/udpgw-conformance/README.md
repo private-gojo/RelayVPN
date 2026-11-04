@@ -12,8 +12,10 @@ Build the existing UDPGW target, then run:
       python3 -m unittest discover \
       -s tests/udpgw-conformance -p 'test_*.py' -v
 
-The harness starts its own UDPGW process with a 4096-byte UDP MTU and a
-two-mapping per-client limit. Each integration test opens a fresh TCP client.
+The harness starts its own UDPGW process with max-clients=4092 and a
+4096-byte UDP MTU. The per-client mapping limit is deliberately set to two
+for deterministic LRU verification; it is a test override, not the selected
+16,384-mapping deployment setting. Each integration test opens a fresh TCP client.
 
 ## Coverage
 
