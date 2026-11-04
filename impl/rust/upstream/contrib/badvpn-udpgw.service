@@ -1,0 +1,20 @@
+[Unit]
+Description=badvpn-udpgw (Rust) — UDP gateway on 127.0.0.1:7300
+After=network.target
+
+[Service]
+ExecStart=/usr/local/bin/badvpn-udpgw --listen-addr 127.0.0.1:7300 --max-clients 10000 --max-connections-for-client 10 --loglevel info
+Restart=always
+RestartSec=3
+
+# One file descriptor per UDP connection: size this for
+# --max-clients x --max-connections-for-client, plus headroom.
+# Example resource limits.
+LimitNOFILE=10000
+LimitNPROC=10000
+
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
