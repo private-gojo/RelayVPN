@@ -1,0 +1,94 @@
+name: WP4 - UDPGW ASan UBSan and memory ramp
+
+on:
+  push:
+    branches:
+      - work/wp4-udpgw-sanitizer-memory-20261104
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: wp4-udpgw-sanitizer-memory
+  cancel-in-progress: false
+
+jobs:
+  sanitizer-memory:
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    env:
+      ASAN_OPTIONS: detect_leaks=1:halt_on_error=1:strict_string_checks=1
+      UBSAN_OPTIONS: print_stacktrace=1:halt_on_error=1
+
+    steps:
+      - name: Checkout baseline-derived WP4 branch
+        uses: actions/checkout@v4
+
+      - name: Install build and test dependencies
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y build-essential cmake python3
+
+      - name: Configure instrumented BadVPN UDPGW
+        run: |
+          set -euo pipefail
+          cmake -S . -B "$RUNNER_TEMP/wp4-sanitizer-build" \
+            -G "Unix Makefiles" \
+            -DBUILD_NOTHING_BY_DEFAULT=ON \
+            -DBUILD_TESTS=ON \
+            -DBUILD_UDPGW=ON \
+            -DCMAKE_BUILD_TYPE=Debug \
+            "-DCMAKE_C_FLAGS=-O1 -g -fno-omit-frame-pointer -fsanitize=address,undefined" \
+            "-DCMAKE_EXE_LINKER_FLAGS=-fsanitize=address,undefined"
+
+      - name: Build standalone UDPGW and ChunkBuffer2 test
+        run: |
+          set -euo pipefail
+          cmake --build "$RUNNER_TEMP/wp4-sanitizer-build" \
+            --target badvpn-udpgw chunkbuffer2_test --parallel 2
+          UDPGW="$RUNNER_TEMP/wp4-sanitizer-build/udpgw/badvpn-udpgw"
+          ldd "$UDPGW" | grep -q libasan
+          ldd "$UDPGW" | grep -q libubsan
+          test -x "$UDPGW"
+
+      - name: Run sanitizer unit tests
+        run: |
+          set -euo pipefail
+          "$RUNNER_TEMP/wp4-sanitizer-build/tests/chunkbuffer2_test"
+          python3 -m py_compile tests/udpgw-memory-ramp/memory_ramp.py
+          python3 tests/udpgw-memory-ramp/test_memory_ramp.py -v
+
+      - name: Run live UDPGW mapping and memory ramp
+        run: |
+          set -euo pipefail
+          mkdir -p wp4-artifacts
+          UDPGW_BIN="$RUNNER_TEMP/wp4-sanitizer-build/udpgw/badvpn-udpgw" \
+            python3 tests/udpgw-memory-ramp/memory_ramp.py \
+              --levels 16,64,256,512,1024 \
+              --cycles 3 \
+              --batch-size 32 \
+              --max-connections 16384 \
+              --udp-mtu 1200 \
+              --reply-timeout 30 \
+              --artifact-dir wp4-artifacts \
+              --output wp4-artifacts/memory-ramp.json
+
+      - name: Reject sanitizer diagnostics
+        if: always()
+        run: |
+          set -euo pipefail
+          if grep -En 'AddressSanitizer|LeakSanitizer|runtime error:' wp4-artifacts/udpgw-memory-ramp.log; then
+            echo "Sanitizer diagnostic found in UDPGW runtime log" >&2
+            exit 1
+          fi
+
+      - name: Upload WP4 measurements and sanitizer log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: relayvpn-wp4-udpgw-sanitizer-memory
+          path: wp4-artifacts/
+          if-no-files-found: warn
+          retention-days: 30
