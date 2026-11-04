@@ -147,7 +147,7 @@ async def probe_loop(session, target, direct_sock, state, payload_size, stop_at)
 
 
 async def worker_async(worker_id, sessions_spec, target, payload_size, direction, duration,
-                       start_event, ready_queue, result_queue):
+                       rate_per_session, start_event, ready_queue, result_queue):
     started_cpu = time.process_time()
     state = {
         "expected_acks": sum(len(flows) for _, flows in sessions_spec),
@@ -213,7 +213,7 @@ async def worker_async(worker_id, sessions_spec, target, payload_size, direction
                 tasks.append(asyncio.create_task(
                     produce_data(
                         session, state, target[:2], payload_size, stop_at,
-                        args.up_rate_pps / args.clients if args.up_rate_pps else 0,
+                        rate_per_session,
                     )
                 ))
 
@@ -422,7 +422,9 @@ def run_case(args):
         process = ctx.Process(
             target=worker_entry,
             args=(index, spec, target, args.payload_size, args.direction,
-                  args.duration, start_event, ready_queue, result_queue),
+                  args.duration,
+                  args.up_rate_pps / args.clients if args.up_rate_pps else 0,
+                  start_event, ready_queue, result_queue),
         )
         process.start()
         workers.append(process)
