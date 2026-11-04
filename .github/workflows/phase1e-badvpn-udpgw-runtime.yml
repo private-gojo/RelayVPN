@@ -264,6 +264,7 @@ jobs:
           echo '--- UDPGW log ---'
           grep -E 'capacity:|entering event loop' "$ROOT/logs/udpgw.log"
           grep -q 'effective_mappings=' "$ROOT/logs/udpgw.log"
+          grep -q 'reserve=1064' "$ROOT/logs/udpgw.log"
           tail -n 100 "$ROOT/logs/udpgw.log"
           echo '--- SSH dynamic-forward evidence ---'
           grep -E 'Authenticated to|Local forwarding listening|dynamic request|channel [0-9]+: new' "$ROOT/logs/ssh-client.log" | tail -n 30 || true
