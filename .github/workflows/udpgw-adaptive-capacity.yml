@@ -10,7 +10,7 @@ on:
         description: Requested active UDP mappings; runtime auto-caps to detected resources
         required: true
         type: choice
-        default: "100000"
+        default: "50000"
         options:
           - "1000"
           - "5000"
