@@ -7,7 +7,7 @@ on:
         description: Requested active UDP mappings; runtime auto-caps to detected resources
         required: true
         type: choice
-        default: "100000"
+        default: "50000"
         options:
           - "1000"
           - "5000"
@@ -89,7 +89,8 @@ jobs:
             --target "$TARGET_MAPPINGS" \
             --server-pid "$UDPGW_PID" \
             --server-log "$ROOT/udpgw.log" \
-            --timeout 300 \
+            --timeout 900 \
+            --sample-interval 2 \
             --output "$ROOT/result.json"
 
           kill -TERM "$UDPGW_PID"
