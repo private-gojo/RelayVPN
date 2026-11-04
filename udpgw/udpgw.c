@@ -478,7 +478,7 @@ int detect_memory_budget (uint64_t *limit, uint64_t *used, uint64_t *budget)
                 *used = 0;
                 *budget = available / 2;
                 fclose(file);
-                return 1;
+                return 2;
             }
         }
         fclose(file);
@@ -490,7 +490,7 @@ int detect_memory_budget (uint64_t *limit, uint64_t *used, uint64_t *budget)
         *limit = available;
         *used = 0;
         *budget = available / 2;
-        return available > 0;
+        return available > 0 ? 2 : 0;
     }
 #endif
 
@@ -509,8 +509,8 @@ int configure_capacity (void)
 #ifdef BADVPN_LINUX
     struct rlimit limits;
     if (getrlimit(RLIMIT_NOFILE, &limits) != 0) {
-        BLog(BLOG_WARNING, "getrlimit(RLIMIT_NOFILE) failed: %s", strerror(errno));
-        return 1;
+        BLog(BLOG_ERROR, "getrlimit(RLIMIT_NOFILE) failed: %s", strerror(errno));
+        return 0;
     }
 
     rlim_t desired = (rlim_t)options.fd_limit;
@@ -560,7 +560,8 @@ int configure_capacity (void)
     uint64_t memory_limit = 0;
     uint64_t memory_used = 0;
     uint64_t memory_budget = 0;
-    if (detect_memory_budget(&memory_limit, &memory_used, &memory_budget)) {
+    int memory_source = detect_memory_budget(&memory_limit, &memory_used, &memory_budget);
+    if (memory_source) {
         uint64_t pp_buffer = chunk_buffer_allocation((uint64_t)pp_mtu);
         uint64_t udp_send_buffer = chunk_buffer_allocation((uint64_t)options.udp_mtu);
         uint64_t udp_receive_buffer = (uint64_t)options.udp_mtu;
@@ -576,7 +577,8 @@ int configure_capacity (void)
         }
 
         BLog(BLOG_NOTICE,
-             "capacity: memory_limit=%llu memory_used=%llu memory_budget=%llu bytes_per_mapping=%llu memory_mappings=%llu",
+             "capacity: memory_source=%s memory_ceiling_estimate=%llu memory_used=%llu memory_budget=%llu bytes_per_mapping=%llu memory_mappings=%llu",
+             memory_source == 1 ? "cgroup" : "host-available",
              (unsigned long long)memory_limit, (unsigned long long)memory_used,
              (unsigned long long)memory_budget, (unsigned long long)per_mapping,
              (unsigned long long)memory_capacity);
