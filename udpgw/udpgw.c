@@ -451,7 +451,7 @@ int detect_memory_budget (uint64_t *limit, uint64_t *used, uint64_t *budget)
             read_uint64_file("/sys/fs/cgroup/memory/memory.usage_in_bytes", &memory_used);
     }
 
-    if (have_limit && memory_limit > 0 && memory_limit < UINT64_MAX / 2) {
+    if (have_limit && memory_limit > 0 && memory_limit < (1ULL << 60)) {
         uint64_t available = memory_limit > memory_used ? memory_limit - memory_used : 0;
         uint64_t reserve = memory_limit / 4;
         const uint64_t minimum_reserve = 128ULL * 1024ULL * 1024ULL;
