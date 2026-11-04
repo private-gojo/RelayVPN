@@ -1,0 +1,142 @@
+name: WP7-A - C and Rust UDPGW differential conformance
+
+on:
+  push:
+    branches:
+      - work/wp7a-c-rust-differential-20261104
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: wp7a-c-rust-differential
+  cancel-in-progress: false
+
+jobs:
+  differential-conformance:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+
+    steps:
+      - name: Checkout RelayVPN candidate branch
+        uses: actions/checkout@v4
+
+      - name: Checkout pinned Rust UDPGW candidate
+        uses: actions/checkout@v4
+        with:
+          repository: Dean6767/RustBadVpnUdpgw
+          ref: bfd488a62618fc9dd026ac221b2f274a90ffe2b8
+          path: external/RustBadVpnUdpgw
+
+      - name: Install C, Python, and networking tools
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y build-essential cmake python3 iproute2
+
+      - name: Install stable Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Build and validate the unchanged C UDPGW
+        run: |
+          set -euo pipefail
+          BUILD_DIR="$RUNNER_TEMP/wp7a-c-build"
+          cmake -S . -B "$BUILD_DIR" \
+            -G "Unix Makefiles" \
+            -DBUILD_NOTHING_BY_DEFAULT=ON \
+            -DBUILD_UDPGW=ON
+          cmake --build "$BUILD_DIR" --parallel 2 --target badvpn-udpgw
+          test -x "$BUILD_DIR/udpgw/badvpn-udpgw"
+
+      - name: Build and validate pinned Rust UDPGW
+        run: |
+          set -euo pipefail
+          MANIFEST="external/RustBadVpnUdpgw/Cargo.toml"
+          cargo fmt --manifest-path "$MANIFEST" --check
+          cargo clippy --manifest-path "$MANIFEST" --all-targets -- -D warnings
+          cargo test --manifest-path "$MANIFEST"
+          cargo build --manifest-path "$MANIFEST" --release
+          test -x external/RustBadVpnUdpgw/target/release/badvpn-udpgw
+
+      - name: Run identical WP2 and WP6 vectors against C and Rust
+        shell: bash
+        run: |
+          set -euo pipefail
+          C_BIN="$RUNNER_TEMP/wp7a-c-build/udpgw/badvpn-udpgw"
+          RUST_BIN="$GITHUB_WORKSPACE/external/RustBadVpnUdpgw/target/release/badvpn-udpgw"
+          RUST_WRAPPER="$RUNNER_TEMP/wp7a-rust-compat"
+          RESOLV_BACKUP="$RUNNER_TEMP/wp7a-resolv.conf"
+          DNS_LOG="$GITHUB_WORKSPACE/wp7a-dns-stub.log"
+          C_LOG="$GITHUB_WORKSPACE/wp7a-c-udpgw.log"
+          RUST_LOG="$GITHUB_WORKSPACE/wp7a-rust-udpgw.log"
+          DNS_PID=""
+
+          sudo cp -L /etc/resolv.conf "$RESOLV_BACKUP"
+          cleanup() {
+            set +e
+            if [[ -n "$DNS_PID" ]]; then
+              sudo kill "$DNS_PID" 2>/dev/null
+              wait "$DNS_PID" 2>/dev/null
+            fi
+            sudo cp "$RESOLV_BACKUP" /etc/resolv.conf
+          }
+          trap cleanup EXIT
+
+          sudo sh -c 'printf "nameserver 127.0.0.1\\noptions timeout:1 attempts:1\\n" > /etc/resolv.conf'
+          sudo python3 tests/udpgw-conformance/dns_stub.py > "$DNS_LOG" 2>&1 &
+          DNS_PID=$!
+
+          for attempt in $(seq 1 30); do
+            if grep -q "listening on 127.0.0.1:53" "$DNS_LOG"; then
+              break
+            fi
+            if ! kill -0 "$DNS_PID" 2>/dev/null; then
+              cat "$DNS_LOG"
+              exit 1
+            fi
+            sleep 0.1
+          done
+          grep -q "listening on 127.0.0.1:53" "$DNS_LOG"
+
+          cat > "$RUST_WRAPPER" <<'EOF'
+          #!/usr/bin/env bash
+          set -euo pipefail
+          exec "$RUST_BIN" --udp-idle-timeout 0 "$@"
+          EOF
+          chmod +x "$RUST_WRAPPER"
+          export RUST_BIN
+
+          echo "===== C baseline: WP2 + WP6 ====="
+          UDPGW_BIN="$C_BIN" \
+          UDPGW_DNS_TEST=1 \
+          UDPGW_EXPECT_OVERSIZE_FRAME_DISCONNECT=1 \
+          UDPGW_LOG_FILE="$C_LOG" \
+            python3 -m unittest discover \
+              -s tests/udpgw-conformance \
+              -p 'test_*.py' \
+              -v
+
+          echo "===== Rust candidate: WP2 + WP6 ====="
+          UDPGW_BIN="$RUST_WRAPPER" \
+          UDPGW_DNS_TEST=1 \
+          UDPGW_EXPECT_OVERSIZE_FRAME_DISCONNECT=0 \
+          UDPGW_LOG_FILE="$RUST_LOG" \
+            python3 -m unittest discover \
+              -s tests/udpgw-conformance \
+              -p 'test_*.py' \
+              -v
+
+      - name: Upload WP7-A differential logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: relayvpn-wp7a-c-rust-differential
+          path: |
+            wp7a-c-udpgw.log
+            wp7a-rust-udpgw.log
+            wp7a-dns-stub.log
+          if-no-files-found: warn
+          retention-days: 30

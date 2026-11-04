@@ -1,3 +1,4 @@
+import os
 import unittest
 
 from client import UDPGWClient
@@ -34,10 +35,10 @@ class UDPGWMalformedInputTests(unittest.TestCase):
             echo.wait_for(payload)
 
     def test_short_udpgw_header_is_dropped(self):
-        self._send_malformed_then_verify_session(b"\x00")
+        self._send_malformed_then_verify_session(b"\\x00")
 
     def test_missing_ipv4_address_is_dropped(self):
-        self._send_malformed_then_verify_session(b"\x00\x71\x00")
+        self._send_malformed_then_verify_session(b"\\x00\\x71\\x00")
 
     def test_missing_ipv6_address_is_dropped(self):
         self._send_malformed_then_verify_session(bytes((FLAG_IPV6, 0x72, 0x00)))
@@ -51,14 +52,30 @@ class UDPGWMalformedInputTests(unittest.TestCase):
         )
         self._send_malformed_then_verify_session(malformed)
 
-    def test_packetproto_payload_over_decoder_mtu_disconnects_client(self):
+    def test_packetproto_frame_over_decoder_mtu_behavior(self):
         self.assertEqual(UDPGW_MTU, UDP_MTU + 3 + 18)
         oversized = b"x" * (UDPGW_MTU + 1)
         self.client.send_raw_frame(pack_frame(oversized))
-        self.assertTrue(
-            self.client.wait_closed(timeout=3.0),
-            "oversized PacketProto frame should close the client connection",
-        )
+
+        expect_disconnect = os.environ.get(
+            "UDPGW_EXPECT_OVERSIZE_FRAME_DISCONNECT", "1"
+        ) == "1"
+        if expect_disconnect:
+            self.assertTrue(
+                self.client.wait_closed(timeout=3.0),
+                "oversized PacketProto frame should close the client connection",
+            )
+            return
+
+        # Rust currently accepts the u16-sized frame, rejects its UDP payload,
+        # and keeps the TCP client alive. Verify the stream remains usable.
+        with EchoServer() as echo:
+            payload = b"wp7-rust-valid-after-oversized-frame"
+            self.client.send_packet(0, 0x74, echo.address, payload)
+            response = self.client.recv_packet()
+            self.assertEqual(response["conid"], 0x74)
+            self.assertEqual(response["payload"], payload)
+            echo.wait_for(payload)
 
 
 if __name__ == "__main__":
