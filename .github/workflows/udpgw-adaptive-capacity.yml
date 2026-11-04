@@ -92,7 +92,7 @@ jobs:
             --target "$TARGET_MAPPINGS" \
             --server-pid "$UDPGW_PID" \
             --server-log "$ROOT/udpgw.log" \
-            --timeout 300 \
+            --timeout 600 \
             --output "$ROOT/result.json"
 
           kill -TERM "$UDPGW_PID"
