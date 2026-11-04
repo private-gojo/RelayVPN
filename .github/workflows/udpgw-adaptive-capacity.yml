@@ -42,7 +42,8 @@ jobs:
           cmake -S . -B "$RUNNER_TEMP/relayvpn-udpgw-build" \
             -G "Unix Makefiles" \
             -DBUILD_NOTHING_BY_DEFAULT=ON \
-            -DBUILD_UDPGW=ON
+            -DBUILD_UDPGW=ON \
+            -DCMAKE_BUILD_TYPE=Release
           cmake --build "$RUNNER_TEMP/relayvpn-udpgw-build" --parallel 2
           test -x "$RUNNER_TEMP/relayvpn-udpgw-build/udpgw/badvpn-udpgw"
 
@@ -64,6 +65,7 @@ jobs:
             --max-total-connections 100000 \
             --fd-limit 262144 \
             --udp-mtu 1472 \
+            --local-udp-addrs 127.0.0.1:1 65535 \
             --loglevel notice > "$ROOT/udpgw.log" 2>&1 &
           UDPGW_PID=$!
 
