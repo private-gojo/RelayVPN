@@ -152,13 +152,13 @@ def run_rate(process, client, echo, counter, mappings, rate, trial,
     sent = [0]
     send_error = [None]
     client.settimeout(2)
+    filler_size = max(0, payload_size - 8)
+    payload = MAGIC + bytes([trial]) + bytes(4) + bytes(filler_size)
+    frames = [make_packet(conid, echo.address, payload) for conid in range(mappings)]
     start_wall = time.monotonic()
     server_start = read_cpu_ticks(process.pid)
     echo_start = read_cpu_ticks(echo.process.pid)
     load_start = read_cpu_ticks(os.getpid())
-    filler_size = max(0, payload_size - 8)
-    payload = MAGIC + bytes([trial]) + bytes(4) + bytes(filler_size)
-    frames = [make_packet(conid, echo.address, payload) for conid in range(mappings)]
 
     def sender():
         sequence = 0
@@ -358,6 +358,8 @@ def main():
         parser.error("duration, payload size, and batch size must be positive")
     if max(args.mapping_levels) > min(args.max_connections, 65535):
         parser.error("highest mapping level exceeds max-connections or conid range")
+    if len(args.mapping_levels) * len(args.rates) > 255:
+        parser.error("too many profiling trials for the one-byte trial marker")
     result = run_profile(args)
     os.makedirs(args.artifact_dir, exist_ok=True)
     with open(args.output, "w", encoding="utf-8") as stream:
