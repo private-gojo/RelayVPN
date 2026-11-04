@@ -35,19 +35,23 @@ class FrameCounter:
     def feed(self, data):
         with self.lock:
             self.buffer.extend(data)
-            while len(self.buffer) >= FRAME.size:
-                length = FRAME.unpack_from(self.buffer)[0]
-                end = FRAME.size + length
+            offset = 0
+            while len(self.buffer) - offset >= FRAME.size:
+                length = FRAME.unpack_from(self.buffer, offset)[0]
+                end = offset + FRAME.size + length
                 if end > len(self.buffer):
                     break
-                body = bytes(self.buffer[FRAME.size:end])
-                del self.buffer[:end]
+                body_start = offset + FRAME.size
+                body = self.buffer[body_start:end]
                 if len(body) < 9:
                     self.malformed += 1
-                    continue
-                payload = body[9:]
-                if len(payload) >= 4 and payload[:3] == MAGIC:
-                    self.counts[payload[3]] += 1
+                else:
+                    payload = body[9:]
+                    if len(payload) >= 4 and payload[:3] == MAGIC:
+                        self.counts[payload[3]] += 1
+                offset = end
+            if offset:
+                del self.buffer[:offset]
 
     def count(self, trial):
         with self.lock:
@@ -58,42 +62,25 @@ class FrameCounter:
             return dict(self.counts), self.malformed, len(self.buffer)
 
 
-class EchoServer:
-    def __init__(self):
-        self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        self.sock.bind(("127.0.0.1", 0))
-        self.address = self.sock.getsockname()
-        self.stop_event = threading.Event()
-        self.counts = collections.Counter()
-        self.lock = threading.Lock()
-        self.thread = threading.Thread(target=self._run, daemon=True)
-        self.thread.start()
-
-    def _run(self):
-        self.sock.settimeout(0.1)
-        while not self.stop_event.is_set():
-            try:
-                data, address = self.sock.recvfrom(65535)
-            except socket.timeout:
-                continue
-            except OSError:
-                break
-            if len(data) >= 4 and data[:3] == MAGIC:
-                with self.lock:
-                    self.counts[data[3]] += 1
-            try:
-                self.sock.sendto(data, address)
-            except OSError:
-                pass
-
-    def count(self, trial):
-        with self.lock:
-            return self.counts[trial]
+class UdpEchoServer:
+    def __init__(self, binary):
+        self.process = subprocess.Popen(
+            [binary], stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            text=True, bufsize=1
+        )
+        line = self.process.stdout.readline().strip()
+        if not line or self.process.poll() is not None:
+            raise RuntimeError("UDP echo helper failed to start")
+        self.address = ("127.0.0.1", int(line))
 
     def close(self):
-        self.stop_event.set()
-        self.sock.close()
-        self.thread.join(timeout=1)
+        if self.process.poll() is None:
+            self.process.terminate()
+            try:
+                self.process.wait(timeout=3)
+            except subprocess.TimeoutExpired:
+                self.process.kill()
+                self.process.wait(timeout=3)
 
 
 def read_cpu_ticks(pid):
@@ -165,10 +152,13 @@ def run_rate(process, client, echo, counter, mappings, rate, trial,
     sent = [0]
     send_error = [None]
     client.settimeout(2)
-    filler_size = max(0, payload_size - 8)
     start_wall = time.monotonic()
     server_start = read_cpu_ticks(process.pid)
+    echo_start = read_cpu_ticks(echo.process.pid)
     load_start = read_cpu_ticks(os.getpid())
+    filler_size = max(0, payload_size - 8)
+    payload = MAGIC + bytes([trial]) + bytes(4) + bytes(filler_size)
+    frames = [make_packet(conid, echo.address, payload) for conid in range(mappings)]
 
     def sender():
         sequence = 0
@@ -178,14 +168,10 @@ def run_rate(process, client, echo, counter, mappings, rate, trial,
                 if time.monotonic() - start_wall >= duration:
                     break
                 count = min(batch_size, max(1, int(rate * 0.01)))
-                batch = bytearray()
-                for _ in range(count):
-                    conid = sequence % mappings
-                    payload = MAGIC + bytes([trial]) + struct.pack("!I", sequence)
-                    payload += bytes(filler_size)
-                    batch.extend(make_packet(conid, echo.address, payload))
-                    sequence += 1
+                batch = b"".join(frames[(sequence + offset) % mappings]
+                                 for offset in range(count))
                 client.sendall(batch)
+                sequence += count
                 sent[0] += count
                 next_deadline += count / rate
                 delay = next_deadline - time.monotonic()
@@ -205,6 +191,7 @@ def run_rate(process, client, echo, counter, mappings, rate, trial,
     worker.join(timeout=2)
     end_wall = time.monotonic()
     server_end = read_cpu_ticks(process.pid)
+    echo_end = read_cpu_ticks(echo.process.pid)
     load_end = read_cpu_ticks(os.getpid())
     elapsed = max(end_wall - start_wall, 0.001)
 
@@ -215,9 +202,10 @@ def run_rate(process, client, echo, counter, mappings, rate, trial,
     hz = os.sysconf("SC_CLK_TCK")
     server_cpu_seconds = ((server_end[0] + server_end[1]) -
                           (server_start[0] + server_start[1])) / hz
+    echo_cpu_seconds = ((echo_end[0] + echo_end[1]) -
+                        (echo_start[0] + echo_start[1])) / hz
     harness_cpu_seconds = ((load_end[0] + load_end[1]) -
                            (load_start[0] + load_start[1])) / hz
-    udp_received = echo.count(trial)
     echoed = counter.count(trial)
     malformed, trailing = counter.snapshot()[1:]
     metrics = process_metrics(process.pid)
@@ -228,17 +216,17 @@ def run_rate(process, client, echo, counter, mappings, rate, trial,
         "mappings": mappings,
         "payload_bytes": payload_size,
         "sent_datagrams": sent[0],
-        "udp_echo_server_received": udp_received,
         "tcp_echoes_received": echoed,
         "sent_pps": round(sent[0] / elapsed, 2),
-        "udp_received_pps": round(udp_received / elapsed, 2),
         "echoed_pps": round(echoed / elapsed, 2),
         "echo_completion_ratio": round(echoed / sent[0], 5) if sent[0] else 0,
         "server_cpu_seconds": round(server_cpu_seconds, 4),
         "server_one_core_cpu_percent": round(100 * server_cpu_seconds / elapsed, 2),
         "server_cpu_microseconds_per_echo": (
-            round(server_cpu_seconds * 1000000 / echoed, 3) if echoed else None
+            round(server_cpu_seconds * 1_000_000 / echoed, 3) if echoed else None
         ),
+        "echo_server_cpu_seconds": round(echo_cpu_seconds, 4),
+        "echo_server_one_core_cpu_percent": round(100 * echo_cpu_seconds / elapsed, 2),
         "harness_process_cpu_seconds": round(harness_cpu_seconds, 4),
         "harness_one_core_cpu_percent": round(100 * harness_cpu_seconds / elapsed, 2),
         "server_process": metrics,
@@ -262,7 +250,7 @@ def run_profile(args):
          "--loglevel", "notice"],
         stdout=log_file, stderr=subprocess.STDOUT
     )
-    echo = EchoServer()
+    echo = UdpEchoServer(args.echo_binary)
     results = []
     try:
         wait_for_ready(process, port, log_path)
@@ -274,8 +262,7 @@ def run_profile(args):
             client = socket.create_connection(("127.0.0.1", port), timeout=10)
             client.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
             client.settimeout(10)
-            warm_mappings(client, mappings, echo.address, args.payload_bytes,
-                          args.reply_timeout)
+            warm_mappings(client, mappings, echo.address, args.payload_bytes, args.reply_timeout)
             counter = FrameCounter()
             reader_stop = threading.Event()
 
@@ -340,11 +327,12 @@ def run_profile(args):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--binary", default=os.environ.get("UDPGW_BIN"))
+    parser.add_argument("--echo-binary", default=os.environ.get("UDP_ECHO_BIN"))
     parser.add_argument("--mapping-levels", default="64,256,1024")
-    parser.add_argument("--rates", default="2000,5000,10000,20000,40000")
+    parser.add_argument("--rates", default="2000,5000,10000,20000,40000,60000,80000,100000")
     parser.add_argument("--duration", type=float, default=3.0)
     parser.add_argument("--payload-bytes", type=int, default=128)
-    parser.add_argument("--batch-size", type=int, default=64)
+    parser.add_argument("--batch-size", type=int, default=256)
     parser.add_argument("--max-connections", type=int, default=4096)
     parser.add_argument("--reply-timeout", type=float, default=15.0)
     parser.add_argument("--settle-timeout", type=float, default=2.0)
@@ -354,6 +342,8 @@ def main():
     args = parser.parse_args()
     if not args.binary:
         parser.error("--binary or UDPGW_BIN is required")
+    if not args.echo_binary:
+        parser.error("--echo-binary or UDP_ECHO_BIN is required")
     args.mapping_levels = [int(value) for value in args.mapping_levels.split(",")]
     args.rates = [int(value) for value in args.rates.split(",")]
     if not args.mapping_levels or any(value <= 0 for value in args.mapping_levels):
