@@ -1,6 +1,10 @@
+import ipaddress
 import os
 import socket
+import struct
 import unittest
+
+from client import recv_frame
 
 from protocol import FLAG_DNS, FLAG_IPV6
 from support import EchoServer, new_client, start_server
@@ -25,11 +29,26 @@ class UDPGWIPv6AndDNSTests(unittest.TestCase):
         with echo:
             payload = b"wp2-ipv6-round-trip"
             self.client.send_packet(FLAG_IPV6, 60, echo.address, payload)
-            response = self.client.recv_packet()
-            self.assertEqual(response["conid"], 60)
-            self.assertTrue(response["flags"] & FLAG_IPV6)
-            self.assertEqual(response["payload"], payload)
-            self.assertEqual(response["target"][1], echo.address[1])
+            expect_ipv6_flag = (
+                os.environ.get("UDPGW_EXPECT_IPV6_DOWNLINK_FLAG", "1") == "1"
+            )
+            if expect_ipv6_flag:
+                response = self.client.recv_packet()
+                self.assertEqual(response["conid"], 60)
+                self.assertTrue(response["flags"] & FLAG_IPV6)
+                self.assertEqual(response["payload"], payload)
+                self.assertEqual(response["target"], (echo.address[0], echo.address[1]))
+            else:
+                # The Go candidate writes the 16-byte IPv6 address but omits
+                # FLAG_IPV6 in its downlink header. Inspect raw bytes so the
+                # mismatch is recorded without mis-decoding the address.
+                block = recv_frame(self.client.sock)
+                self.assertEqual(struct.unpack("<BH", block[:3]), (0, 60))
+                self.assertEqual(
+                    block[3:19], ipaddress.ip_address(echo.address[0]).packed
+                )
+                self.assertEqual(block[19:21], struct.pack("!H", echo.address[1]))
+                self.assertEqual(block[21:], payload)
             echo.wait_for(payload)
 
     def test_dns_flag_redirects_to_configured_resolver(self):

@@ -28,6 +28,8 @@ not a feature-equivalent drop-in replacement:
 - The implementation has a 32 KiB downstream UDP payload ceiling. The
   uplink path does not enforce the same ceiling, so an oversized datagram can
   be forwarded upstream and then discarded on its return path.
+- IPv6 downlink frames copy the 16-byte address but omit the required
+  `FLAG_IPV6` bit, so conforming clients misparse the response.
 - Malformed UDPGW blocks terminate the client stream instead of being ignored
   while keeping the client session active.
 - DNS-flagged traffic is parsed as a DNS message before forwarding. The DNS
@@ -53,7 +55,8 @@ These are documented behavioral differences, not compatibility passes:
 | Downlink UDP above 32 KiB | MTU-limited by configured buffers | MTU-limited by configured buffers | Drop |
 | LRU at per-client cap | Yes | Yes | No cap / no LRU |
 | Reply from unexpected UDP source | Accept | Accept | Filter |
-| IPv4/IPv6 echo and exact wire vectors | Expected pass | Expected pass | Expected pass |
+| IPv6 downlink `FLAG_IPV6` bit | Set | Set | Missing |
+| IPv4/IPv6 wire vectors | Expected pass | Expected pass | IPv4 pass; IPv6 flag mismatch |
 
 Go's UDP test uses its source-defined 32,768-byte payload limit and a fixed
 loopback listener on TCP port 7300. C and Rust continue to use the WP2

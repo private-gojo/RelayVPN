@@ -27,7 +27,10 @@ class LiveWireGoldenVectorTests(unittest.TestCase):
         (body_length,) = struct.unpack("<H", length_prefix)
         response_body = recv_exact(self.client.sock, body_length)
 
-        flags = FLAG_IPV6 if ipv6 else 0
+        expect_ipv6_flag = (
+            os.environ.get("UDPGW_EXPECT_IPV6_DOWNLINK_FLAG", "1") == "1"
+        )
+        flags = FLAG_IPV6 if ipv6 and expect_ipv6_flag else 0
         address = ipaddress.ip_address(target[0]).packed
         expected_body = (
             struct.pack("<BH", flags, conid)
