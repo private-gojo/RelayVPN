@@ -57,3 +57,19 @@ Run #10 (commit \`2ab2c342bd1209c0e99b838e30f55975927713e6\`, GitHub Actions run
 | 1,024 | 100k pps | 95.32% | 100% | 0 |
 
 The 1,024-mapping / 100k-pps case used 95.32% of one UDPGW CPU core in the repeat; the C echo helper used 51.33% and the Python harness 11.00%. The two 64-packet-batch runs therefore agree that this workload approaches a single-core ceiling around 100k pps at 1,024 active mappings. Client-buffer loss varied between runs (1,648 events in run #9 versus none in run #10 at that point), so the precise loss rate is not stable enough to promote as a fixed capacity number.
+
+
+## Third-run load variation
+
+Run #11 (GitHub Actions run \`41833302913\`, commit \`44764946bc2b21fdf2aea0204d22d8c522f704c6\`) also passed the full workflow but showed the 1,024-mapping instance reaching its CPU ceiling earlier:
+
+| Active mappings | Offered rate | UDPGW active CPU | Echo completion | Client-buffer errors |
+|---:|---:|---:|---:|---:|
+| 64 | 100k pps | 90.99% | 100% | 0 |
+| 256 | 100k pps | 92.99% | 100% | 0 |
+| 1,024 | 80k pps | 98.33% | 93.940% | 14,533 |
+| 1,024 | 100k pps | 100.32% | 98.605% | 4,161 |
+
+At 1,024 mappings, run #11 again had UDPGW CPU near one core while the C echo helper used about 51–58% and the Python harness about 6–9%. The missing echo count closely matched the recorded \`out of client buffer\` events. Runs #9 and #10 were less loaded at 80k pps, so there is no stable CI-only safe threshold to publish. Across all three runs, 1,024 mappings at 100k pps consistently approached or reached one full UDPGW core; packet-buffer drops varied.
+
+Conclusion: the single-instance service is CPU-limited near the 80k–100k pps range for this 1,024-mapping loopback workload. A fixed capacity limit must not be inferred from these GitHub-hosted runner results; the same profile needs to run on the intended VPS/container. This is throughput in packets per second, not a mapping-count result.
